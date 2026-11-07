@@ -4,8 +4,9 @@
 //! gathers both and hands them in.
 //!
 //! It does what inReach Sync 1.4.47 does (SyncManager.cs, SyncDevice.cs):
-//! when Garmin answers for any of contacts, presets or quick texts, the whole
-//! SyncData table is cleared and only what Garmin sent is written back; the
+//! when Garmin answers for any of contacts, presets or quick texts, SyncData
+//! is cleared (`d,*`, which on the device spares the address book) and only
+//! what Garmin sent is written back; the
 //! contacts Garmin put on the device (Synced = 1) are replaced and those made
 //! on the device kept; settings 89 and 97 get the quick texts' and presets'
 //! "last changed" times, and 73 the time of the sync. The one departure: a
@@ -166,6 +167,9 @@ pub struct Plan {
     pub addresses: Changes<Item>,
     pub quick_texts: Changes<Item>,
     pub presets: Changes<Item>,
+    /// Address-book rows no Garmin contact has. Clearing SyncData (`d,*`)
+    /// spares the address book on the device, so they stay (docs/device-observations.md).
+    pub addresses_kept: Vec<Item>,
     /// SyncData rows of other kinds, which clearing the table removes too.
     pub other_sync_data_removed: Vec<Item>,
     /// The times a sync writes into settings 89, 97 and 73, as (ID, value).
@@ -441,7 +445,10 @@ pub fn plan(
         changes.removed = have;
         changes
     };
-    let addresses = kind_changes(ADDRESS, addresses_wanted);
+    let mut addresses = kind_changes(ADDRESS, addresses_wanted);
+    // The device's `d,*` does not remove the address book: what Garmin does
+    // not write again stays as it is.
+    let addresses_kept = std::mem::take(&mut addresses.removed);
     let quick_texts = kind_changes(QUICK_TEXT, quick_texts_wanted);
     let presets = kind_changes(PRESET, presets_wanted);
     let wrote_any = server.contacts.list().is_some() || server.presets.list().is_some() || server.quick_texts.list().is_some();
@@ -472,6 +479,7 @@ pub fn plan(
         contacts,
         device_contacts_kept: made_here.len(),
         addresses,
+        addresses_kept,
         quick_texts,
         presets,
         other_sync_data_removed,
@@ -571,8 +579,9 @@ mod tests {
         assert!(!p.contacts.is_change() && !p.quick_texts.is_change());
         // The synced rows are deleted by ID before the contacts are written again.
         assert_eq!(p.contact_ids_to_delete, ["30", "31"]);
-        // An address that is no Garmin contact's goes, as clearing SyncData has it.
-        assert_eq!(p.addresses.removed.iter().map(|i| i.short_code).collect::<Vec<_>>(), [3]);
+        // An address that is no Garmin contact's stays: the device's d,* spares the address book.
+        assert!(p.addresses.removed.is_empty());
+        assert_eq!(p.addresses_kept.iter().map(|i| i.short_code).collect::<Vec<_>>(), [3]);
         // inReach Sync writes the recipients as Garmin sends them: no `ms`.
         assert_eq!(p.presets.removed[0].value, "ada@example.com,+46700000000,ms|All good");
         assert_eq!(p.presets.added[0].value, "ada@example.com,+46700000000|All good");
@@ -588,6 +597,7 @@ mod tests {
         assert_eq!(p.contacts.added.iter().map(|c| c.first_name.as_str()).collect::<Vec<_>>(), ["Grace"]);
         assert_eq!(p.contacts.removed.iter().map(|c| c.first_name.as_str()).collect::<Vec<_>>(), ["Old"]);
         assert_eq!(p.addresses.added[0].short_code, 13);
+        assert_eq!(p.addresses_kept.len(), 2);
         // Presets and quick texts were not answered, but clearing SyncData removes them all the same.
         assert_eq!(p.presets.removed.len(), 1);
         assert_eq!(p.quick_texts.removed.len(), 1);

@@ -68,13 +68,27 @@ the sync).
 - **Inserts replace.** A SyncData insert (`i,<type>,<short code>,"<value>"`) for a type and short code the
   table already has replaced that row and kept its ID (`(type << 16) | short code`): the presets and the
   breadcrumb changed in place.
-- **`d,*` on SyncData removed nothing.** The device answered it as taken, yet every row it held before
-  was still there after the sync, with the same ID, including 8 addresses no Explore contact has. Either
-  this firmware (3.90) ignores `d,*` on SyncData, or it keeps or rebuilds those rows. inReach Sync sends the
-  same `d,*\r\n` (SyncDevice.DeleteAllFromTable), so it would leave them too. Not known yet which.
+- **`d,*` on SyncData spares the address book.** After the sync every row was still there with the same
+  ID, including 8 addresses no Explore contact has. A test settled why (below): `d,*` removes every row but
+  the address book (type 1). inReach Sync sends the same `d,*\r\n` (SyncDevice.DeleteAllFromTable), so it
+  leaves those addresses too.
 - **The breadcrumb** read `breadcrumb` before (written by something else, likely the phone app) and `sbc`
   after.
 - **Settings** 448 and 760, which Garmin sent and the device did not have, were added.
 - **After the restart** (`RESET_DEVICE_REQ` from app mode, cable plugged in) the Mini came back as a **USB
   drive**, not in app mode. From charger mode the same message brings it up in app mode. inReach Sync only
   waits for the device to come back (7 s, then 5 s) and does not mind the mode.
+
+## Deleting from SyncData, tested
+
+On the same Mini, with SyncData saved first and restored after (it ended identical):
+
+1. A dummy quick text (`i,2,99,"…"`) was taken and got ID `131171` (`0x20063`).
+2. `d,*` was taken and left **12 of 27 rows: exactly the 12 address-book rows** (type 1). Quick texts,
+   presets, the breadcrumb and the dummy were gone.
+3. `d,131171` (one row by its ID) was **refused**: the device answered `Cannot delete individual
+   shortcodes`.
+
+So on SyncData, `d,*` is the only delete, it never touches the address book, and an insert with a type
+and short code the table has replaces that row. `core/examples/delete_test.rs` is the test (it writes to
+the device; it saves SyncData first and writes back what goes missing).

@@ -348,6 +348,9 @@ fn show_plan(out: &mut dyn Write, plan: &crate::plan::Plan) {
     section(out, "Contacts from Garmin", &plan.contacts, contact);
     let _ = writeln!(out, "  {} made on the device, kept", plan.device_contacts_kept);
     section(out, "Address book", &plan.addresses, |i| i.value.clone());
+    if !plan.addresses_kept.is_empty() {
+        let _ = writeln!(out, "  {} that are no Garmin contact's stay (the device keeps its address book)", plan.addresses_kept.len());
+    }
     section(out, "Quick texts", &plan.quick_texts, |i| i.value.clone());
     section(out, "Preset messages", &plan.presets, |i| {
         let (to, message) = i.value.split_once('|').unwrap_or(("", &i.value));
