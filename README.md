@@ -66,6 +66,7 @@ bin/install    # makepkg -fsi: the app lands in the launcher
 
 `docs/device-protocol.md` and `docs/server-protocol.md` describe what inReach
 Sync 1.4.47 does over USB and with Garmin's servers, read from its code.
-`docs/device-observations.md` records what a real inReach Mini answered.
+`docs/device-observations.md` and `docs/server-observations.md` record what a
+real inReach Mini and Garmin's servers answered.
 `docs/account-api-swagger.json` is the published description of Garmin's
 inReach account API.
