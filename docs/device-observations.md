@@ -92,3 +92,18 @@ On the same Mini, with SyncData saved first and restored after (it ended identic
 So on SyncData, `d,*` is the only delete, it never touches the address book, and an insert with a type
 and short code the table has replaces that row. `core/examples/delete_test.rs` is the test (it writes to
 the device; it saves SyncData first and writes back what goes missing).
+
+## The second sync: waypoints, routes and tracks, 2026-11-07
+
+`nimrag-sync sync --apply` with the waypoint, track and route steps, on the same Mini (21 waypoints, no
+routes, 10 track blocks of which 2 high-detail):
+
+- **Waypoints:** all 21 went to Garmin (`POST /V1/Sync/Waypoints`), Garmin answered with 21, and after
+  `d,*` on Waypoints and the inserts the table held exactly those 21: same IDs, names, symbols, all
+  `SyncState` 0. So `d,*` does work on Waypoints (an insert alone would not explain it; see below).
+  Garmin's copies differed from the device's in places: created and updated times later by seconds to
+  months on 15 waypoints (never earlier, never by whole hours, so not a time-zone slip), and 5 coordinates
+  off by exactly 0.000001°. Garmin's merge keeps its own, newer, copies.
+- **Tracks:** Garmin's newest point was from 2020-09-17; one high-detail block was newer and went to Garmin
+  (`POST /V1/Sync/Tracks`), which answered `insertCount` 1.
+- **Routes:** none on the device, none from Garmin (`POST /V1/Sync/Routes` answered `[]`).
