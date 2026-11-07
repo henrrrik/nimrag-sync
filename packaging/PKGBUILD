@@ -1,0 +1,37 @@
+# Builds nimrag-sync from a release's source tarball (for the AUR, or to build
+# it yourself). pkgbuild/PKGBUILD builds the working tree instead (bin/install).
+pkgname=nimrag-sync
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Keep an inReach in sync on Linux: software, contacts, messages and settings'
+arch=('x86_64' 'aarch64')
+url='https://github.com/henrrrik/nimrag-sync'
+license=('MIT')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'libsecret')
+makedepends=('gcc' 'make' 'cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  cargo fetch --locked --manifest-path core/Cargo.toml
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  ./bin/build
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  QT_QPA_PLATFORM=offscreen ./bin/test
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 build/nimrag-sync "$pkgdir/usr/bin/nimrag-sync"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 pkgbuild/nimrag-sync.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/nimrag-sync.svg"
+  install -Dm644 pkgbuild/nimrag-sync.desktop "$pkgdir/usr/share/applications/nimrag-sync.desktop"
+  install -Dm644 pkgbuild/70-nimrag-sync.rules "$pkgdir/usr/lib/udev/rules.d/70-nimrag-sync.rules"
+}

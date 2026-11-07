@@ -1,0 +1,9 @@
+#!/bin/sh
+# In an Arch Linux (or Arch Linux ARM) container, as root: the packages
+# nimrag-sync builds and tests with, and an unprivileged "builder" user that
+# owns the checkout, since makepkg will not run as root.
+set -eu
+pacman -Syu --noconfirm --needed base-devel git rust qt6-base qt6-declarative qt6-wayland \
+    xdg-desktop-portal libsecret
+id builder >/dev/null 2>&1 || useradd -m builder
+chown -R builder: "$PWD"

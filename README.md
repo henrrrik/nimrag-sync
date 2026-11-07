@@ -18,6 +18,20 @@ The window: plug the inReach in, sign in, switch it on if it is charging, and
 **Sync now**. The password is kept in the desktop's keyring (Secret Service,
 through `secret-tool`); the email address in `~/.config/nimrag-sync/account`.
 
+## Install
+
+Packages for Arch Linux and Omarchy, x86_64 and aarch64, are on the
+[releases page](https://github.com/henrrrik/nimrag-sync/releases). pacman installs one straight
+from its address:
+
+```sh
+sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.1.0/nimrag-sync-0.1.0-1-x86_64.pkg.tar.zst
+```
+
+(`aarch64` in place of `x86_64` on ARM, such as an Asahi Mac.) The package brings the udev rule
+that lets the user at the computer reach the inReach, so no `sudo` is needed afterwards.
+`packaging/PKGBUILD` builds the same package from the release's source.
+
 ## Languages
 
 The window follows the language picked under Omarchy's Setup > Language, live: English and Swedish so
@@ -100,3 +114,8 @@ Sync 1.4.47 does over USB and with Garmin's servers, read from its code.
 real inReach Mini and Garmin's servers answered.
 `docs/account-api-swagger.json` is the published description of Garmin's
 inReach account API.
+
+## Not Garmin's
+
+nimrag-sync is not made by or affiliated with Garmin. inReach, Explore and MapShare are Garmin's
+trademarks. It talks to Garmin's inReach service with your own account, as inReach Sync does.

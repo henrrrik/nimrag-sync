@@ -25,6 +25,7 @@ Usage: nimrag-sync [open]                  open the window
        nimrag-sync login <email>             sign in to the Garmin account; the password (typed, or piped
                                              to stdin) goes to the keyring
        nimrag-sync logout                    sign out; the password leaves the keyring
+       nimrag-sync --version                 the version
        nimrag-sync help                      this text
 ";
 
@@ -60,6 +61,10 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
         "preview" => preview(json, out, err),
         "sync" => sync(apply, json, out, err),
         "logout" => logout(out, err),
+        "version" | "--version" => {
+            let _ = writeln!(out, "nimrag-sync {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         "help" | "--help" | "-h" => {
             let _ = write!(out, "{USAGE}");
             0
@@ -614,6 +619,7 @@ mod tests {
         assert!(err.contains("unknown command flash") && err.contains("Usage"));
         assert_eq!(run_args(dir.path(), &["devices", "--force"]).0, 1);
         assert_eq!(run_args(dir.path(), &["help"]).0, 0);
+        assert_eq!(run_args(dir.path(), &["--version"]), (0, format!("nimrag-sync {}\n", env!("CARGO_PKG_VERSION")), String::new()));
         let (code, _, err) = run_args(dir.path(), &["read-table"]);
         assert_eq!(code, 1);
         assert!(err.contains("needs a table ID"));

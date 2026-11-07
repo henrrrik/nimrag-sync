@@ -3,6 +3,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='Keep an inReach in sync on Linux: software, contacts, messages and settings'
 arch=('x86_64' 'aarch64')
+url='https://github.com/henrrrik/nimrag-sync'
 license=('MIT')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'libsecret')
 makedepends=('gcc' 'make' 'cargo')
