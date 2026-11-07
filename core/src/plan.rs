@@ -123,9 +123,15 @@ pub struct Item {
 }
 
 impl Item {
-    /// The insert line (SyncData inserts leave out the ID, which the device derives).
+    /// The insert line (SyncData inserts leave out the ID, which the device
+    /// derives). Quotes are doubled in the value, but in a preset only in its
+    /// message, not its recipients, as inReach Sync writes it (Commands.cs).
     pub fn insert_line(&self) -> String {
-        format!("i,{},{},\"{}\"", self.kind, self.short_code, self.value.replace('"', "\"\""))
+        let value = match (self.kind, self.value.split_once('|')) {
+            (PRESET, Some((to, message))) => format!("{to}|{}", message.replace('"', "\"\"")),
+            _ => self.value.replace('"', "\"\""),
+        };
+        format!("i,{},{},\"{value}\"", self.kind, self.short_code)
     }
 }
 
@@ -162,10 +168,20 @@ pub struct Plan {
     pub presets: Changes<Item>,
     /// SyncData rows of other kinds, which clearing the table removes too.
     pub other_sync_data_removed: Vec<Item>,
-    /// The settings a sync writes, as (ID, value).
-    pub settings: Vec<(u32, String)>,
+    /// The times a sync writes into settings 89, 97 and 73, as (ID, value).
+    pub timestamps: Vec<(u32, String)>,
+    /// Garmin's settings, written after the quick texts.
+    pub settings: SettingsPlan,
     /// Whether the sync clears SyncData before writing it.
     pub clears_sync_data: bool,
+    /// The steps inReach Sync makes: one for each kind Garmin answered for.
+    /// A step whose answer had no list writes nothing but still runs (the
+    /// quick texts' step then still tells Garmin they were synced).
+    pub presets_step: bool,
+    pub quick_texts_step: bool,
+    /// The answer had a list (maybe empty): its rows, the breadcrumb and its time are written.
+    pub presets_listed: bool,
+    pub quick_texts_listed: bool,
     /// The SyncData rows a sync writes, in order, after clearing the table.
     #[serde(skip)]
     pub sync_data: Vec<Item>,
@@ -183,6 +199,7 @@ impl Plan {
             || self.quick_texts.is_change()
             || self.presets.is_change()
             || !self.other_sync_data_removed.is_empty()
+        || self.settings.is_change()
     }
 }
 
@@ -240,6 +257,88 @@ pub struct FromServer<'a> {
     pub quick_texts_modified: Option<i64>,
     /// The time of the sync (Unix seconds), for setting 73.
     pub now: i64,
+    /// Garmin's settings as (ID, text), in Garmin's order; `None` for none.
+    pub settings: Option<&'a [(String, String)]>,
+}
+
+/// One setting a sync changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SettingChange {
+    pub id: u32,
+    /// What the device has now; `None` when it has no such setting.
+    pub from: Option<String>,
+    /// What it gets; `None` when the setting is deleted.
+    pub to: Option<String>,
+}
+
+/// What Garmin's settings do to the device (DeviceSettings.SyncSettings).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SettingsPlan {
+    /// Garmin sent settings, so the step runs and is acknowledged.
+    pub answered: bool,
+    pub changed: Vec<SettingChange>,
+    pub unchanged: usize,
+    /// Garmin's device type (setting 16) differs from the device's: inReach
+    /// Sync writes it and has the device reset its settings to their defaults.
+    pub device_type_change: Option<SettingChange>,
+    /// The lines written to the Settings table, in Garmin's order.
+    #[serde(skip)]
+    pub lines: Vec<String>,
+}
+
+impl SettingsPlan {
+    pub fn is_change(&self) -> bool {
+        !self.changed.is_empty() || self.device_type_change.is_some()
+    }
+}
+
+/// The settings step for a device whose Settings table text is given.
+pub fn settings_plan(settings_text: &str, server: Option<&[(String, String)]>) -> SettingsPlan {
+    let mut plan = SettingsPlan::default();
+    // inReach Sync makes no step of missing or empty settings.
+    let Some(server) = server.filter(|s| !s.is_empty()) else { return plan };
+    plan.answered = true;
+    let device: BTreeMap<String, (String, String)> = csv::parse(settings_text)
+        .into_iter()
+        .filter_map(|r| {
+            let id = r.first()?.clone();
+            Some((id, (r.get(1).cloned().unwrap_or_default(), r.get(2).cloned().unwrap_or_default())))
+        })
+        .collect();
+    if let Some((_, v)) = server.iter().find(|(k, _)| k == "16")
+        && let Some((current, _)) = device.get("16")
+        && v != current
+    {
+        plan.device_type_change = Some(SettingChange { id: 16, from: Some(current.clone()), to: Some(v.clone()) });
+    }
+    for (key, value) in server {
+        let Ok(id) = key.parse::<u32>() else { continue };
+        if key == "16" {
+            continue;
+        }
+        let have = device.get(&id.to_string());
+        let remove = (id == 35 || id == 43) && value.trim().is_empty();
+        if remove {
+            plan.lines.push(format!("d,{id}"));
+            if have.is_some() {
+                plan.changed.push(SettingChange { id, from: have.map(|h| h.0.clone()), to: None });
+            }
+            continue;
+        }
+        let default = if id == 760 { value.clone() } else { have.map(|h| h.1.clone()).unwrap_or_default() };
+        let mut line = format!("i,{id},\"{value}\"");
+        if !default.trim().is_empty() {
+            line.push_str(&format!(",\"{default}\""));
+        }
+        plan.lines.push(line);
+        let default_now = have.map(|h| h.1.as_str()).unwrap_or("");
+        if have.map(|h| h.0.as_str()) == Some(value.as_str()) && (id != 760 || default_now == value) {
+            plan.unchanged += 1;
+        } else {
+            plan.changed.push(SettingChange { id, from: have.map(|h| h.0.clone()), to: Some(value.clone()) });
+        }
+    }
+    plan
 }
 
 /// The settings a sync writes, as (ID, value).
@@ -249,7 +348,13 @@ pub const SYNC_TIME: u32 = 73;
 
 /// The plan for a device whose Contacts table (`contacts_version`, its text)
 /// and SyncData text are given.
-pub fn plan(contacts_version: u8, contacts_text: &str, sync_data_text: &str, server: &FromServer) -> Result<Plan, String> {
+pub fn plan(
+    contacts_version: u8,
+    contacts_text: &str,
+    sync_data_text: &str,
+    settings_text: &str,
+    server: &FromServer,
+) -> Result<Plan, String> {
     let columns = contact_columns(contacts_version)
         .ok_or_else(|| format!("the device's Contacts table has version {contacts_version}, which nimrag-sync does not know"))?;
     let synced_at = columns.iter().position(|c| *c == "Synced");
@@ -351,16 +456,17 @@ pub fn plan(contacts_version: u8, contacts_text: &str, sync_data_text: &str, ser
         }
     }
 
-    let mut settings = Vec::new();
+    let mut timestamps = Vec::new();
     if server.quick_texts.list().is_some() && let Some(t) = server.quick_texts_modified {
-        settings.push((QUICK_TEXTS_TIME, t.to_string()));
+        timestamps.push((QUICK_TEXTS_TIME, t.to_string()));
     }
     if server.presets.list().is_some() && let Some(t) = server.presets_modified {
-        settings.push((PRESETS_TIME, t.to_string()));
+        timestamps.push((PRESETS_TIME, t.to_string()));
     }
     if clears {
-        settings.push((SYNC_TIME, server.now.to_string()));
+        timestamps.push((SYNC_TIME, server.now.to_string()));
     }
+    let settings = settings_plan(settings_text, server.settings);
 
     Ok(Plan {
         contacts,
@@ -369,8 +475,13 @@ pub fn plan(contacts_version: u8, contacts_text: &str, sync_data_text: &str, ser
         quick_texts,
         presets,
         other_sync_data_removed,
+        timestamps,
         settings,
         clears_sync_data: clears,
+        presets_step: server.presets.answered(),
+        quick_texts_step: server.quick_texts.answered(),
+        presets_listed: server.presets.list().is_some(),
+        quick_texts_listed: server.quick_texts.list().is_some(),
         sync_data,
         contact_rows,
         contact_ids_to_delete,
@@ -407,7 +518,43 @@ mod tests {
         262144,4,0,\"sbc\"\r\n";
 
     fn from<'a>(contacts: Sent<'a, Contact>, presets: Sent<'a, Preset>, quick_texts: Sent<'a, QuickText>) -> FromServer<'a> {
-        FromServer { contacts, presets, quick_texts, presets_modified: Some(1600500092), quick_texts_modified: Some(1600355483), now: 1789300000 }
+        FromServer {
+            contacts,
+            presets,
+            quick_texts,
+            presets_modified: Some(1600500092),
+            quick_texts_modified: Some(1600355483),
+            now: 1789300000,
+            settings: None,
+        }
+    }
+
+    const SETTINGS: &str = "16,1,1\r\n24,600,\r\n35,abc,\r\n40,50,7\r\n760,1,1\r\n";
+
+    fn settings(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn settings_as_inreach_sync_writes_them() {
+        let garmin = settings(&[("24", "600"), ("40", "60"), ("35", " "), ("41", "x"), ("760", "2"), ("16", "1"), ("note", "skip")]);
+        let p = settings_plan(SETTINGS, Some(&garmin));
+        assert!(p.answered && p.device_type_change.is_none());
+        // Garmin's order; the device's default kept; 760's default is its value; 35 blank is deleted.
+        assert_eq!(p.lines, ["i,24,\"600\"", "i,40,\"60\",\"7\"", "d,35", "i,41,\"x\"", "i,760,\"2\",\"2\""]);
+        assert_eq!(p.unchanged, 1);
+        let ids: Vec<u32> = p.changed.iter().map(|c| c.id).collect();
+        assert_eq!(ids, [40, 35, 41, 760]);
+        assert_eq!(p.changed[1].to, None);
+    }
+
+    #[test]
+    fn a_device_type_change_and_no_settings() {
+        let p = settings_plan(SETTINGS, Some(&settings(&[("16", "2")])));
+        assert_eq!(p.device_type_change, Some(SettingChange { id: 16, from: Some("1".into()), to: Some("2".into()) }));
+        assert!(p.lines.is_empty() && p.is_change());
+        assert!(!settings_plan(SETTINGS, Some(&[])).answered);
+        assert!(!settings_plan(SETTINGS, None).answered);
     }
 
     #[test]
@@ -418,7 +565,7 @@ mod tests {
         ];
         let quick = [QuickText { id: 30, text: "I'm fine".into() }];
         let presets = [preset("All good", true)];
-        let p = plan(5, CONTACTS_V5, SYNC_DATA, &from(Sent::List(&contacts), Sent::List(&presets), Sent::List(&quick))).unwrap();
+        let p = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::List(&contacts), Sent::List(&presets), Sent::List(&quick))).unwrap();
         assert_eq!(p.device_contacts_kept, 1);
         assert_eq!(p.contacts.unchanged.len(), 2);
         assert!(!p.contacts.is_change() && !p.quick_texts.is_change());
@@ -431,37 +578,37 @@ mod tests {
         assert_eq!(p.presets.added[0].value, "ada@example.com,+46700000000|All good");
         assert!(p.clears_sync_data);
         assert_eq!(p.sync_data.last().unwrap().kind, BREADCRUMB);
-        assert_eq!(p.settings, [(89, "1600355483".to_string()), (97, "1600500092".to_string()), (73, "1789300000".to_string())]);
+        assert_eq!(p.timestamps, [(89, "1600355483".to_string()), (97, "1600500092".to_string()), (73, "1789300000".to_string())]);
     }
 
     #[test]
     fn additions_and_removals() {
         let contacts = [contact(7, "Ada", "ada@example.com", 11), contact(9, "Grace", "grace@example.com", 13)];
-        let p = plan(5, CONTACTS_V5, SYNC_DATA, &from(Sent::List(&contacts), Sent::NotSent, Sent::NotSent)).unwrap();
+        let p = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::List(&contacts), Sent::NotSent, Sent::NotSent)).unwrap();
         assert_eq!(p.contacts.added.iter().map(|c| c.first_name.as_str()).collect::<Vec<_>>(), ["Grace"]);
         assert_eq!(p.contacts.removed.iter().map(|c| c.first_name.as_str()).collect::<Vec<_>>(), ["Old"]);
         assert_eq!(p.addresses.added[0].short_code, 13);
         // Presets and quick texts were not answered, but clearing SyncData removes them all the same.
         assert_eq!(p.presets.removed.len(), 1);
         assert_eq!(p.quick_texts.removed.len(), 1);
-        assert_eq!(p.settings, [(73, "1789300000".to_string())]);
+        assert_eq!(p.timestamps, [(73, "1789300000".to_string())]);
     }
 
     #[test]
     fn without_any_answer_nothing_is_touched() {
-        let p = plan(5, CONTACTS_V5, SYNC_DATA, &from(Sent::NotSent, Sent::NotSent, Sent::NotSent)).unwrap();
-        assert!(!p.is_change() && !p.clears_sync_data && p.settings.is_empty());
+        let p = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NotSent, Sent::NotSent, Sent::NotSent)).unwrap();
+        assert!(!p.is_change() && !p.clears_sync_data && p.timestamps.is_empty());
         assert!(p.contacts.left_alone && p.presets.left_alone && p.presets.unchanged.len() == 1);
     }
 
     #[test]
     fn an_answer_without_its_list() {
         // Presets answered without a list: cleared, nothing written, no time for them.
-        let p = plan(5, CONTACTS_V5, SYNC_DATA, &from(Sent::NotSent, Sent::NoList, Sent::NotSent)).unwrap();
+        let p = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NotSent, Sent::NoList, Sent::NotSent)).unwrap();
         assert!(p.clears_sync_data && p.presets.removed.len() == 1 && p.sync_data.is_empty());
-        assert_eq!(p.settings, [(73, "1789300000".to_string())]);
+        assert_eq!(p.timestamps, [(73, "1789300000".to_string())]);
         // Contacts without a list would cost the synced contacts: refused.
-        assert!(plan(5, CONTACTS_V5, SYNC_DATA, &from(Sent::NoList, Sent::NotSent, Sent::NotSent)).is_err());
+        assert!(plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NoList, Sent::NotSent, Sent::NotSent)).is_err());
     }
 
     #[test]
@@ -481,6 +628,10 @@ mod tests {
         assert_eq!(fields.insert_line(contact_columns(1).unwrap()), "i,Ada,Lovelace,\"Analytical, Ltd\",ada@example.com,,");
         let item = Item { kind: PRESET, short_code: 14, value: "a@b,ms|Say \"hi\"".into() };
         assert_eq!(item.insert_line(), "i,3,14,\"a@b,ms|Say \"\"hi\"\"\"");
-        assert!(plan(9, "", "", &from(Sent::NotSent, Sent::NotSent, Sent::NotSent)).is_err());
+        let quoted_recipient = Item { kind: PRESET, short_code: 14, value: "\"x\"|hi".into() };
+        assert_eq!(quoted_recipient.insert_line(), "i,3,14,\"\"x\"|hi\"");
+        let quick = Item { kind: QUICK_TEXT, short_code: 30, value: "a|\"b\"".into() };
+        assert_eq!(quick.insert_line(), "i,2,30,\"a|\"\"b\"\"\"");
+        assert!(plan(9, "", "", "", &from(Sent::NotSent, Sent::NotSent, Sent::NotSent)).is_err());
     }
 }

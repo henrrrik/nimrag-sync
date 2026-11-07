@@ -15,10 +15,14 @@ pub const SYSFS_HIDRAW: &str = "/sys/class/hidraw";
 
 /// inReach Sync's DefaultTimeout.
 pub const TIMEOUT: Duration = Duration::from_millis(1800);
+/// WRITE_TABLE waits eight times as long (DeLormeBinary.WriteTable).
+pub const WRITE_TIMEOUT: Duration = Duration::from_millis(1800 * 8);
 
 pub const VERSION: u16 = 0xA001;
 pub const TABLE_VERSION: u16 = 0xFC01;
 pub const READ_TABLE: u16 = 0xFC02;
+pub const WRITE_TABLE: u16 = 0xFC03;
+pub const APPLY_DEFAULT_SETTINGS: u16 = 0xFC06;
 pub const RESET_FOR_MASS_STORAGE: u16 = 0xFC07;
 pub const READ_APP_MODE: u16 = 0xFC08;
 pub const RESET_DEVICE_REQ: u16 = 0xAAFE;
@@ -82,6 +86,16 @@ pub struct Found {
     pub product: u16,
 }
 
+/// How many bytes one table script may have (BatchWriter): 2046 on an inReach
+/// Mini or software 2.6.0.1 and later, else 1022 (an unreadable version counts as 1.0).
+pub fn max_script_len(product: &str, firmware: &str) -> usize {
+    let mini = product.to_lowercase().starts_with("inreach mini");
+    let parts: Vec<u64> = firmware.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+    let version = |i: usize| parts.get(i).copied().unwrap_or(0);
+    let new_enough = (version(0), version(1), version(2), version(3)) >= (2, 6, 0, 1);
+    if mini || new_enough { 2046 } else { 1022 }
+}
+
 /// The 180-byte answer to VERSION (DeLormeBinary.GetDeviceVersion).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Version {
@@ -124,6 +138,10 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("the device did not answer")]
     NoAnswer,
+    #[error("the device refused a write: {0}")]
+    Refused(String),
+    #[error("a line is too long for the device ({0} bytes)")]
+    LineTooLong(usize),
 }
 
 /// The inReach devices with a hidraw node, read from `sysfs` (normally
@@ -305,6 +323,54 @@ impl<T: Transport> InReach<T> {
             .filter(|imei| imei.len() == 15 && imei.bytes().all(|b| b.is_ascii_digit())))
     }
 
+    /// Runs a script on a table: `\r\n`-terminated `i,…` and `d,…` lines. The
+    /// device answers without data when it took it, with its error text when not.
+    pub fn write_table(&mut self, table: u8, version: u8, script: &str) -> Result<(), Error> {
+        let mut data = vec![table, version];
+        data.extend_from_slice(script.as_bytes());
+        self.drain()?;
+        self.send(WRITE_TABLE, &data)?;
+        let answer = self.receive(WRITE_TABLE, WRITE_TIMEOUT)?.ok_or(Error::NoAnswer)?;
+        let text = String::from_utf8_lossy(&answer.data).trim().to_string();
+        if text.is_empty() { Ok(()) } else { Err(Error::Refused(text)) }
+    }
+
+    /// Writes `lines` in as few scripts as fit in `max` bytes each, as
+    /// BatchWriter.BatchWriteTable does (a line joins a script while the two
+    /// stay under `max`). A line alone longer than that is refused; one exactly
+    /// `max` long, which makes inReach Sync loop forever, goes alone.
+    pub fn batch_write(&mut self, table: u8, version: u8, lines: &[String], max: usize) -> Result<usize, Error> {
+        let mut script = String::new();
+        let mut writes = 0;
+        for line in lines {
+            let mut line = line.trim_end_matches(['\r', '\n']).to_string();
+            if line.trim().is_empty() {
+                continue;
+            }
+            line.push_str("\r\n");
+            if line.len() > max {
+                return Err(Error::LineTooLong(line.len()));
+            }
+            if !script.is_empty() && script.len() + line.len() >= max {
+                self.write_table(table, version, &script)?;
+                writes += 1;
+                script.clear();
+            }
+            script.push_str(&line);
+        }
+        if !script.is_empty() {
+            self.write_table(table, version, &script)?;
+            writes += 1;
+        }
+        Ok(writes)
+    }
+
+    /// The device resets its settings to their defaults (no answer comes).
+    pub fn apply_default_settings(&mut self) -> Result<(), Error> {
+        self.drain()?;
+        self.send(APPLY_DEFAULT_SETTINGS, &[])
+    }
+
     /// The device restarts in its normal (app) mode, as inReach Sync has it do
     /// before a sync; no answer comes, it leaves the bus.
     pub fn restart_app_mode(&mut self) -> Result<(), Error> {
@@ -430,6 +496,44 @@ pub(crate) mod tests {
         fake.streams.push((READ_TABLE, vec![b"8,20041,\r\n9,300434000000001,\r\n11,89AB\r\n".to_vec(), vec![]]));
         let mut dev = InReach::new(fake);
         assert_eq!(dev.imei().unwrap().as_deref(), Some("300434000000001"));
+    }
+
+    #[test]
+    fn write_table_ok_and_refused() {
+        let mut fake = Fake::default();
+        fake.answers.push((WRITE_TABLE, vec![]));
+        fake.answers.push((WRITE_TABLE, b"Bad row".to_vec()));
+        let mut dev = InReach::new(fake);
+        dev.write_table(9, 1, "d,*\r\n").unwrap();
+        let first = dev.transport.written[0].clone();
+        assert_eq!(&first[3 + 8..3 + 8 + 2 + 5], b"\x09\x01d,*\r\n");
+        assert!(matches!(dev.write_table(9, 1, "i,x\r\n"), Err(Error::Refused(t)) if t == "Bad row"));
+    }
+
+    #[test]
+    fn batches_follow_batchwriter() {
+        let mut fake = Fake::default();
+        for _ in 0..3 {
+            fake.answers.push((WRITE_TABLE, vec![]));
+        }
+        let mut dev = InReach::new(fake);
+        // 10 bytes a line with \r\n; under 21 bytes a script: two lines each.
+        let lines: Vec<String> = (0..5).map(|i| format!("i,1,{i},ab")).collect();
+        assert_eq!(dev.batch_write(9, 1, &lines, 21).unwrap(), 3);
+        let scripts: Vec<String> = dev.transport.written.iter().map(|r| {
+            let msg = &r[3..3 + r[2] as usize];
+            String::from_utf8_lossy(&msg[10..msg.len() - 4]).into_owned()
+        }).collect();
+        assert_eq!(scripts, ["i,1,0,ab\r\ni,1,1,ab\r\n", "i,1,2,ab\r\ni,1,3,ab\r\n", "i,1,4,ab\r\n"]);
+        assert!(matches!(dev.batch_write(9, 1, &["x".repeat(30)], 21), Err(Error::LineTooLong(32))));
+    }
+
+    #[test]
+    fn script_length_by_device() {
+        assert_eq!(max_script_len("inReach Mini Rev 0", "1.0"), 2046);
+        assert_eq!(max_script_len("inReach SE", "2.6.0.1"), 2046);
+        assert_eq!(max_script_len("inReach SE", "2.6.0.0"), 1022);
+        assert_eq!(max_script_len("inReach SE", "junk"), 1022);
     }
 
     #[test]

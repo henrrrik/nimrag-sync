@@ -20,6 +20,8 @@ Usage: nimrag-sync [open]                  open the window
                                              the IMEI comes from the device, in app mode, when not given)
        nimrag-sync preview [--json]          what a sync would change on the inReach: contacts, address
                                              book, quick texts, preset messages (reads only; device on)
+       nimrag-sync sync [--apply] [--json]   sync as inReach Sync does: contacts, address book, presets, quick
+                                             texts, settings (a trial run, the preview, without --apply)
        nimrag-sync login <email>             sign in to the Garmin account; the password (typed, or piped
                                              to stdin) goes to the keyring
        nimrag-sync logout                    sign out; the password leaves the keyring
@@ -56,6 +58,7 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
         "server" => server(sysfs, operands.first().copied(), json, out, err),
         "login" => login(operands.first().copied(), out, err),
         "preview" => preview(json, out, err),
+        "sync" => sync(apply, json, out, err),
         "logout" => logout(out, err),
         "help" | "--help" | "-h" => {
             let _ = write!(out, "{USAGE}");
@@ -320,7 +323,23 @@ fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         return 0;
     }
     let _ = writeln!(out, "{} (software {}), last synced {}", p.device, p.firmware, p.last_synced.as_deref().unwrap_or("never"));
-    let plan = &p.plan;
+    if let Some(f) = &p.firmware_update {
+        let _ = writeln!(
+            out,
+            "Garmin offers software {}.{}.{}: inReach Sync installs it first, nimrag-sync cannot yet, so it will not sync.",
+            f.version_major, f.version_minor, f.version_rev
+        );
+    }
+    show_plan(out, &p.plan);
+    let _ = writeln!(
+        out,
+        "{}",
+        if p.plan.is_change() { "A sync would make these changes: nimrag-sync sync --apply" } else { "The inReach is up to date." }
+    );
+    0
+}
+
+fn show_plan(out: &mut dyn Write, plan: &crate::plan::Plan) {
     let contact = |c: &crate::plan::ContactFields| {
         let name = format!("{} {}", c.first_name, c.last_name).trim().to_string();
         let reach: Vec<&str> = [&c.email, &c.phone, &c.inreach].into_iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
@@ -337,7 +356,26 @@ fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     if !plan.other_sync_data_removed.is_empty() {
         let _ = writeln!(out, "Other sync data: {} rows cleared", plan.other_sync_data_removed.len());
     }
-    for (id, value) in &plan.settings {
+    let st = &plan.settings;
+    if st.answered {
+        let _ = writeln!(out, "Settings from Garmin: {} unchanged, {} changed", st.unchanged, st.changed.len());
+        for c in &st.changed {
+            let from = c.from.as_deref().unwrap_or("(none)");
+            let to = c.to.as_deref().unwrap_or("(deleted)");
+            let _ = writeln!(out, "  ~ {}: {from} -> {to}", c.id);
+        }
+        if let Some(c) = &st.device_type_change {
+            let _ = writeln!(
+                out,
+                "  ! device type (setting 16) {} -> {}: the inReach resets ALL its settings to their defaults first",
+                c.from.as_deref().unwrap_or("?"),
+                c.to.as_deref().unwrap_or("?")
+            );
+        }
+    } else {
+        let _ = writeln!(out, "Settings from Garmin: none");
+    }
+    for (id, value) in &plan.timestamps {
         let what = match *id {
             89 => "quick texts changed on Garmin at",
             97 => "presets changed on Garmin at",
@@ -346,8 +384,42 @@ fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         };
         let _ = writeln!(out, "Setting {id} ({what}): {value}");
     }
-    let _ = writeln!(out, "{}", if plan.is_change() { "A sync would make these changes." } else { "The inReach is up to date." });
-    0
+}
+
+fn sync(apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    if !apply {
+        return preview(json, out, err);
+    }
+    let mut steps = Vec::new();
+    let result = crate::sync::apply_here(&mut |s: &str| {
+        if !json {
+            println!("{s}…");
+        }
+        steps.push(s.to_string());
+    });
+    match result {
+        Ok(applied) => {
+            if json {
+                let _ = writeln!(out, "{:#}", serde_json::json!({ "steps": steps, "backup": applied.backup, "left_over": applied.left_over }));
+            } else {
+                let _ = writeln!(out, "Synced. The tables as they were are kept in {}", applied.backup.display());
+                if applied.left_over.is_change() {
+                    let _ = writeln!(out, "Read back, the inReach still differs from Garmin:");
+                    show_plan(out, &applied.left_over);
+                } else {
+                    let _ = writeln!(out, "Read back, the inReach matches Garmin.");
+                }
+            }
+            if applied.left_over.is_change() { 1 } else { 0 }
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            if !steps.is_empty() {
+                let _ = writeln!(err, "Stopped during: {}", steps.last().unwrap());
+            }
+            1
+        }
+    }
 }
 
 fn section<T>(out: &mut dyn Write, title: &str, c: &crate::plan::Changes<T>, show: impl Fn(&T) -> String) {

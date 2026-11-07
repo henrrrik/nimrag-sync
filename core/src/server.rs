@@ -113,6 +113,41 @@ pub struct QuickText {
     pub text: String,
 }
 
+/// A firmware Garmin offers for the device (FirmewareResponseModel).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct FirmwareOffer {
+    #[serde(default)]
+    pub firmware_rev_id: i64,
+    #[serde(rename = "URL")]
+    pub url: Option<String>,
+    pub check_sum: Option<String>,
+    pub name: Option<String>,
+    pub release_date: Option<String>,
+    pub version_major: i64,
+    pub version_minor: i64,
+    pub version_rev: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SettingsResponse {
+    settings: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// A JSON value as Newtonsoft's `JToken.ToString()` gives it, which is how
+/// inReach Sync turns Garmin's settings into text (StringDictionaryConverter).
+fn token_text(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(true) => "True".into(),
+        serde_json::Value::Bool(false) => "False".into(),
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ContactsResponse {
@@ -184,6 +219,57 @@ impl Client {
     pub fn quick_texts(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Option<Vec<QuickText>>>, Error> {
         let r: Option<QuickTextsResponse> = self.sync_get(sync, "QuickTexts", imei, who, "the quick texts")?;
         Ok(r.map(|r| r.quick_texts))
+    }
+
+    /// The firmware Garmin offers for a device of this version, if any. Asked
+    /// without credentials, as inReach Sync asks for every device but the oldest.
+    pub fn firmware_offer(&self, sync: &SyncInfo, imei: &str, version: &[i64; 4]) -> Result<Option<FirmwareOffer>, Error> {
+        let url = format!("{}/V1/Sync/Firmware/Get", sync.sync_url.trim_end_matches('/'));
+        let v: Vec<String> = version.iter().map(i64::to_string).collect();
+        let query = [("imei", imei), ("major", &v[0]), ("minor", &v[1]), ("revision", &v[2]), ("hMinor", &v[3])];
+        self.get_json(&url, &query, None, "the firmware check")
+    }
+
+    /// Garmin's settings for the device, as text by setting ID; `None` for none.
+    pub fn settings(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Vec<(String, String)>>, Error> {
+        let r: Option<SettingsResponse> = self.sync_get(sync, "Settings", imei, who, "the settings")?;
+        Ok(r.and_then(|r| r.settings).map(|m| m.iter().map(|(k, v)| (k.clone(), token_text(v))).collect()))
+    }
+
+    /// Tells Garmin which firmware the device has (MarkFirmwareUpdated), on every sync.
+    pub fn report_firmware(&self, sync: &SyncInfo, imei: &str, version: &[i64; 4], who: &Credentials) -> Result<(), Error> {
+        let (major, minor, revision) = (version[0].to_string(), version[1].to_string(), version[2].to_string());
+        self.acknowledge(sync, "Firmware/Current", &[("imei", imei), ("major", &major), ("minor", &minor), ("revision", &revision)], who)
+    }
+
+    /// Tells Garmin a kind of data reached the device: `Contacts`,
+    /// `QuickTexts` (the address book, in inReach Sync's words) or `Settings`.
+    pub fn mark_synced(&self, sync: &SyncInfo, what: &str, imei: &str, who: &Credentials) -> Result<(), Error> {
+        self.acknowledge(sync, what, &[("synced", "true"), ("imei", imei)], who)
+    }
+
+    /// A POST as inReach Sync sends them: the JSON string "{}" (Newtonsoft
+    /// serializes the C# string "{}"), the answer only checked for 200.
+    fn acknowledge(&self, sync: &SyncInfo, what: &str, query: &[(&str, &str)], who: &Credentials) -> Result<(), Error> {
+        let url = format!("{}/V1/Sync/{what}", sync.sync_url.trim_end_matches('/'));
+        let mut request = self
+            .agent
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("X-CultureCode", "en-US")
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("Authorization", basic(who));
+        for (k, v) in query {
+            request = request.query(*k, *v);
+        }
+        let response = request.send("\"{}\"").map_err(|e| Error::Network(e.to_string()))?;
+        let status = response.status().as_u16();
+        log::info!("POST {url} -> {status}");
+        match status {
+            200 => Ok(()),
+            401 => Err(Error::Unauthorized),
+            _ => Err(Error::Status { status, what: format!("POST {what}") }),
+        }
     }
 
     fn sync_get<T: DeserializeOwned>(
@@ -409,6 +495,37 @@ mod tests {
         assert!(matches!(client.contacts(&sync, "1", &who()), Err(Error::Unauthorized)));
         assert!(matches!(client.presets(&sync, "1", &who()), Err(Error::Status { status: 500, .. })));
         assert!(matches!(client.quick_texts(&sync, "1", &who()), Err(Error::Unexpected { .. })));
+    }
+
+    #[test]
+    fn firmware_settings_and_acknowledgements() {
+        let (base, seen) = serve(|line| {
+            let path = line.split(' ').nth(1).unwrap_or("");
+            if path.starts_with("/V1/Sync/Firmware/Get?imei=1&major=3&minor=90&revision=1101380&hMinor=0") {
+                (200, "null".into(), None)
+            } else if path == "/V1/Sync/Settings?imei=1" {
+                (200, r#"{"Settings":{"24":"600","80":24,"99":true,"35":null}}"#.into(), None)
+            } else if line.starts_with("POST /V1/Sync/Contacts?synced=true&imei=1 ") || line.starts_with("POST /V1/Sync/Firmware/Current?imei=1&major=3&minor=90&revision=1101380 ") {
+                (200, String::new(), None)
+            } else {
+                (404, String::new(), None)
+            }
+        });
+        let client = Client::new("http://unused.invalid");
+        let sync = SyncInfo { sync_url: base, provisioned: true };
+        let version = [3, 90, 1101380, 0];
+        assert_eq!(client.firmware_offer(&sync, "1", &version).unwrap(), None);
+        let settings = client.settings(&sync, "1", &who()).unwrap().unwrap();
+        assert_eq!(settings, [("24".into(), "600".into()), ("80".into(), "24".into()), ("99".into(), "True".into()), ("35".into(), String::new())]);
+        client.mark_synced(&sync, "Contacts", "1", &who()).unwrap();
+        client.report_firmware(&sync, "1", &version, &who()).unwrap();
+        assert!(matches!(client.mark_synced(&sync, "Settings", "1", &who()), Err(Error::Status { status: 404, .. })));
+        let requests = seen.lock().unwrap();
+        // The firmware check goes without credentials; the rest with them.
+        assert!(!requests[0].to_lowercase().contains("authorization"));
+        assert!(requests[1..].iter().all(|r| r.contains("Basic ")));
+        let post = requests.iter().find(|r| r.starts_with("POST /V1/Sync/Contacts")).unwrap();
+        assert!(post.contains("content-length: 4") || post.contains("Content-Length: 4"), "{post}");
     }
 
     #[test]
