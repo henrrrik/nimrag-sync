@@ -11,6 +11,8 @@ Rectangle {
     property var device: ({})
     property bool busy: false
     signal switchToDrive()
+    signal switchOn()
+    signal requestSignIn()
 
     readonly property var version: device.version || null
     readonly property var mode: device.mode === undefined ? null : device.mode
@@ -90,6 +92,23 @@ Rectangle {
             opacity: 0.6
             wrapMode: Text.Wrap
             Layout.fillWidth: true
+        }
+
+        Rectangle {
+            visible: panel.version !== null
+            color: "#2a2a30"
+            implicitHeight: 1
+            Layout.fillWidth: true
+            Layout.topMargin: 8
+            Layout.bottomMargin: 4
+        }
+
+        SyncSection {
+            visible: panel.version !== null
+            mode: panel.mode
+            Layout.fillWidth: true
+            onRequestSignIn: panel.requestSignIn()
+            onSwitchOn: panel.switchOn()
         }
     }
 }

@@ -32,12 +32,21 @@ private slots:
         QVERIFY(Backend::nodesOf("[]").isEmpty());
     }
 
+    void backendKnowsWhenADeviceIsOn()
+    {
+        QVERIFY(!Backend::anyOn(Backend::parseDevices(R"([{"node":"a","mode":"charger"},{"node":"b","mode":"mass-storage"}])")));
+        QVERIFY(Backend::anyOn(Backend::parseDevices(R"([{"node":"a","mode":"charger"},{"node":"b","mode":"app"}])")));
+        QVERIFY(!Backend::anyOn({}));
+    }
+
     void backendStartsQuietWithoutPolling()
     {
         Backend backend(nullptr, false);
         QVERIFY(backend.devices().isEmpty());
         QVERIFY(!backend.busy());
         QVERIFY(backend.error().isEmpty());
+        QVERIFY(backend.task().isEmpty());
+        QVERIFY(backend.preview().isEmpty() && backend.syncResult().isEmpty());
     }
     void themeFallsBack()
     {

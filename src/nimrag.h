@@ -13,6 +13,26 @@ char *nimrag_devices_json(int ask);
 // Restarts the inReach at node as a USB drive: {"switched": bool} or {"error": "…"}.
 char *nimrag_switch_to_drive(const char *node);
 
+// The signed-in account: {"email": "…"} or {"email": null}.
+char *nimrag_account_json(void);
+
+// Signs in (the password goes to the keyring): {"email": "…"} or {"error": "…"}.
+char *nimrag_sign_in(const char *email, const char *password);
+
+// Signs out: {"email": "…" or null} or {"error": "…"}.
+char *nimrag_sign_out(void);
+
+// Restarts the inReach at node in app mode (it switches on): {"restarted": bool} or {"error": "…"}.
+char *nimrag_switch_on(const char *node);
+
+// What a sync would change: {"preview": …} or {"error": "…"}. Takes seconds.
+char *nimrag_preview_json(void);
+
+// Runs a sync, calling step(text, context) on the calling thread before each
+// step: {"applied": …} or {"error": "…", "step": "…"}. Takes up to a minute.
+typedef void (*nimrag_step_callback)(const char *step, void *context);
+char *nimrag_sync_apply(nimrag_step_callback step, void *context);
+
 // The command line; returns the exit code.
 int nimrag_cli_main(int argc, const char *const *argv);
 

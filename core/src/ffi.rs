@@ -7,7 +7,7 @@
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::path::Path;
 
-use crate::{cli, device, status};
+use crate::{cli, credentials, device, status, sync};
 
 fn to_c(text: String) -> *mut c_char {
     // JSON never holds a NUL byte; should one appear, give back an empty string.
@@ -40,6 +40,97 @@ pub unsafe extern "C" fn nimrag_switch_to_drive(node: *const c_char) -> *mut c_c
         Err(e) => serde_json::json!({ "error": e }),
     };
     to_c(answer.to_string())
+}
+
+fn arg(text: *const c_char) -> Option<String> {
+    // SAFETY: the callers pass valid C strings or null.
+    (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned())
+}
+
+fn answer(result: Result<serde_json::Value, String>) -> *mut c_char {
+    to_c(match result {
+        Ok(v) => v.to_string(),
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    })
+}
+
+/// The signed-in account: `{"email": "…"}`, or `{"email": null}`.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_account_json() -> *mut c_char {
+    to_c(serde_json::json!({ "email": credentials::signed_in_email(&credentials::config_dir()) }).to_string())
+}
+
+/// Signs in: the password to the keyring. `{"email": "…"}` or `{"error": "…"}`.
+///
+/// # Safety
+/// Both arguments must be valid NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimrag_sign_in(email: *const c_char, password: *const c_char) -> *mut c_char {
+    let (email, password) = (arg(email).unwrap_or_default(), arg(password).unwrap_or_default());
+    answer(
+        credentials::sign_in(&credentials::config_dir(), &credentials::Keyring::default(), &email, &password)
+            .map(|()| serde_json::json!({ "email": email.trim() }))
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// Signs out: `{"email": "…" or null}` or `{"error": "…"}`.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_sign_out() -> *mut c_char {
+    answer(
+        credentials::sign_out(&credentials::config_dir(), &credentials::Keyring::default())
+            .map(|email| serde_json::json!({ "email": email }))
+            .map_err(|e| e.to_string()),
+    )
+}
+
+/// Restarts the inReach at `node` in app mode (it switches on): `{"restarted": bool}` or `{"error": "…"}`.
+///
+/// # Safety
+/// `node` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nimrag_switch_on(node: *const c_char) -> *mut c_char {
+    let node = arg(node).unwrap_or_default();
+    answer((|| {
+        let found = device::find(Path::new(device::SYSFS_HIDRAW))
+            .into_iter()
+            .find(|f| f.node == Path::new(&node))
+            .ok_or_else(|| format!("no inReach at {node}"))?;
+        let mut dev = device::InReach::open(&found).map_err(|e| e.to_string())?;
+        if dev.app_mode().map_err(|e| e.to_string())? == device::AppMode::App {
+            return Ok(serde_json::json!({ "restarted": false }));
+        }
+        dev.restart_app_mode().map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({ "restarted": true }))
+    })())
+}
+
+/// What a sync would change: `{"preview": …}` or `{"error": "…"}`. Takes
+/// seconds (device and network): call it off the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_preview_json() -> *mut c_char {
+    answer(sync::preview_here().map(|p| serde_json::json!({ "preview": p })))
+}
+
+/// Progress of a sync: called with each step's text and the caller's `context`.
+pub type StepCallback = extern "C" fn(step: *const c_char, context: *mut std::ffi::c_void);
+
+/// Runs a sync as inReach Sync does, calling `step` (on this thread) before
+/// each step. `{"applied": …}` or `{"error": "…", "step": "…"}`. Takes up to a
+/// minute: call it off the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_sync_apply(step: Option<StepCallback>, context: *mut std::ffi::c_void) -> *mut c_char {
+    let mut last = String::new();
+    let result = sync::apply_here(&mut |s: &str| {
+        last = s.to_string();
+        if let (Some(cb), Ok(text)) = (step, CString::new(s)) {
+            cb(text.as_ptr(), context);
+        }
+    });
+    to_c(match result {
+        Ok(applied) => serde_json::json!({ "applied": applied }).to_string(),
+        Err(e) => serde_json::json!({ "error": e, "step": last }).to_string(),
+    })
 }
 
 /// The command line: `argv` as `main` got it. Returns the exit code.

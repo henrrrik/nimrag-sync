@@ -21,13 +21,15 @@ ApplicationWindow {
     readonly property var shortcuts: [
         ["Space", qsTr("Ask the devices again")],
         ["R", qsTr("Ask the devices again")],
+        ["C", qsTr("Check with Garmin what a sync would change")],
         ["?", qsTr("Show or hide the shortcuts")],
         ["Q", qsTr("Quit")]
     ]
 
-    Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; onActivated: win.helpVisible = !win.helpVisible }
-    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
-    Shortcut { sequences: ["Space", "R"]; context: Qt.ApplicationShortcut; onActivated: backend.refresh() }
+    Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !signIn.visible; onActivated: win.helpVisible = !win.helpVisible }
+    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !signIn.visible && backend.task !== "sync"; onActivated: Qt.quit() }
+    Shortcut { sequences: ["Space", "R"]; context: Qt.ApplicationShortcut; enabled: !signIn.visible; onActivated: backend.refresh() }
+    Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: !signIn.visible && backend.account.length > 0; onActivated: backend.checkSync() }
     Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; enabled: win.helpVisible; onActivated: win.helpVisible = false }
 
     Connections {
@@ -62,6 +64,17 @@ ApplicationWindow {
                     implicitHeight: 28
                 }
                 Label {
+                    visible: backend.account.length > 0
+                    text: backend.account
+                    opacity: 0.6
+                }
+                Button {
+                    flat: true
+                    text: backend.account.length > 0 ? qsTr("Sign out") : qsTr("Sign in…")
+                    enabled: backend.task !== "sync"
+                    onClicked: backend.account.length > 0 ? backend.signOut() : signIn.begin()
+                }
+                Label {
                     text: qsTr("? for shortcuts")
                     opacity: 0.5
                 }
@@ -92,6 +105,8 @@ ApplicationWindow {
                             busy: backend.busy
                             Layout.fillWidth: true
                             onSwitchToDrive: backend.switchToDrive(modelData.node)
+                            onSwitchOn: backend.switchOn(modelData.node)
+                            onRequestSignIn: signIn.begin()
                         }
                     }
                 }
@@ -119,6 +134,8 @@ ApplicationWindow {
                 Item { Layout.fillHeight: true }
             }
         }
+
+        SignInDialog { id: signIn }
 
         Label {
             id: noticeLabel
