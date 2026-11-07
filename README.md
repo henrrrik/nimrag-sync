@@ -9,22 +9,29 @@ command line for everything the window does.
 
 ## Install
 
-Packages for Arch Linux and Omarchy, x86_64 and aarch64, are on the
-[releases page](https://github.com/henrrrik/nimrag-sync/releases). Download one, check it against the
-release's `SHA256SUMS`, and install the file:
+Packages for Arch Linux and Omarchy, x86_64 and aarch64 (such as an Asahi Mac), are on the
+[releases page](https://github.com/henrrrik/nimrag-sync/releases).
+
+The packages are signed with nimrag-sync's release key
+(B115 52BD 4C4A C502 17E3  DF95 4B81 8981 13EB C4F6). Have pacman trust it once:
 
 ```sh
-curl -LO https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
-curl -LO https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-sudo pacman -U nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
+curl -sL https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync.asc | sudo pacman-key --add -
+sudo pacman-key --finger B11552BD4C4AC50217E3DF954B81898113EBC4F6    # check: B115 52BD 4C4A C502 17E3  DF95 4B81 8981 13EB C4F6
+sudo pacman-key --lsign-key B11552BD4C4AC50217E3DF954B81898113EBC4F6
 ```
 
-(`aarch64` in place of `x86_64` on ARM, such as an Asahi Mac.) The packages are not signed, so pacman
-installs them from a file you have checked, not straight from their address: with Arch's default
-settings `pacman -U <address>` asks for a signature and stops without one. The package brings a udev
-rule that lets the user at the computer reach the inReach, so no `sudo` is needed afterwards.
-`packaging/PKGBUILD` builds the same package from a release's source.
+Then pacman installs a package straight from its address, checking its signature:
+
+```sh
+sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
+```
+
+(`aarch64` in place of `x86_64` on ARM.) Without the key, download the package and `SHA256SUMS`, check
+with `sha256sum --ignore-missing -c SHA256SUMS`, and `sudo pacman -U` the file.
+
+The package brings a udev rule that lets the user at the computer reach the inReach, so no `sudo` is
+needed afterwards. `packaging/PKGBUILD` builds the same package from a release's source.
 
 ## Using it
 
@@ -161,8 +168,10 @@ that `FakeBackend` keeps up with `Backend`.
 ### Tests and releases
 
 GitHub runs `bin/test` on every push in Arch Linux containers, x86_64 and aarch64 (Arch Linux ARM).
-Pushing a tag `v<version>` builds the packages for both, tests them, and publishes a release with them,
-their checksums and the notes in `docs/releases/v<version>.md`; the version goes in `core/Cargo.toml`,
+Pushing a tag `v<version>` builds the packages for both, tests them, signs them with the release key
+(the `PACKAGE_SIGNING_KEY` secret; its public half is `keys/nimrag-sync.asc`), checks the signatures, and
+publishes a release with the packages, their signatures, their checksums, the key and the notes in
+`docs/releases/v<version>.md`; the version goes in `core/Cargo.toml`,
 `src/main.cpp` and both PKGBUILDs first, and `packaging/PKGBUILD` gets the new source tarball's checksum
 after. Started by hand, the release workflow builds and gathers the packages without releasing anything.
 
