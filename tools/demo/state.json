@@ -1,0 +1,24 @@
+{
+  "account": "ada@example.com",
+  "devices": [{"node": "/dev/hidraw4", "name": "inReach Mini", "vendor": 2334, "product": 2953, "mode": "app",
+               "version": {"company": "DeLorme", "product": "inReach Mini", "firmware": "3.90.1101380", "gps_firmware": "GNSS", "serial": "", "extra": ""},
+               "error": null, "needs_permission": false}],
+  "preview": {
+    "device": "inReach Mini", "firmware": "3.90.1101380", "sync_url": "https://sync.example", "last_synced": "2026-10-30T08:15:00Z",
+    "firmware_update": null,
+    "plan": {
+      "contacts": {"left_alone": false, "unchanged": [1,2,3], "added": [1], "removed": []},
+      "device_contacts_kept": 2,
+      "addresses": {"left_alone": false, "unchanged": [1,2,3,4,5], "added": [1], "removed": []},
+      "addresses_kept": [],
+      "quick_texts": {"left_alone": false, "unchanged": [1,2,3,4,5,6,7], "added": [1], "removed": []},
+      "presets": {"left_alone": false, "unchanged": [1,2,3], "added": [], "removed": []},
+      "other_sync_data_removed": [],
+      "timestamps": [],
+      "settings": {"answered": true, "changed": [], "unchanged": 4, "device_type_change": null},
+      "clears_sync_data": true
+    },
+    "places": {"waypoints": 12, "waypoints_need_sync": false, "routes": 1, "routes_need_sync": false, "tracks_to_send": 4, "newest_track_point": "2026-10-30T08:00:00Z"},
+    "device_commands": []
+  }
+}

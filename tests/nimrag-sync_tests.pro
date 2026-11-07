@@ -3,12 +3,12 @@ CONFIG += c++17 testcase
 TARGET = nimrag-sync_tests
 TEMPLATE = app
 
-INCLUDEPATH += ../src
+INCLUDEPATH += ../src ../tools/demo
 
 # The sources, so the catalogs can be checked against every qsTr() and tr().
 DEFINES += SOURCE_DIR=\\\"$$PWD/../src\\\"
 
-HEADERS += ../src/backend.h ../src/theme.h ../src/translator.h
+HEADERS += ../src/backend.h ../src/theme.h ../src/translator.h ../tools/demo/fakebackend.h
 SOURCES += nimrag-sync_tests.cpp ../src/backend.cpp ../src/theme.cpp ../src/translator.cpp
 
 # The backend links the Rust core (bin/test builds it first).

@@ -8,6 +8,7 @@
 #include <QtTest>
 
 #include "backend.h"
+#include "fakebackend.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -72,6 +73,32 @@ private slots:
         }
         QVERIFY2(missing.isEmpty(), qPrintable("not in sv.json: " + missing.join(" | ")));
         QVERIFY2(mismatched.isEmpty(), qPrintable("placeholders differ: " + mismatched.join(" | ")));
+    }
+
+    // The screenshot demo's FakeBackend offers the window what Backend does.
+    void demoBackendMatchesTheBackend()
+    {
+        auto members = [](const QMetaObject &meta, QMetaMethod::MethodType type) {
+            QStringList names;
+            for (int i = meta.methodOffset(); i < meta.methodCount(); ++i)
+                if (meta.method(i).methodType() == type)
+                    names << QString::fromLatin1(meta.method(i).methodSignature());
+            names.sort();
+            return names;
+        };
+        auto properties = [](const QMetaObject &meta) {
+            QStringList names;
+            for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i)
+                names << QString::fromLatin1(meta.property(i).name());
+            names.sort();
+            return names;
+        };
+        const QMetaObject &real = Backend::staticMetaObject, &fake = FakeBackend::staticMetaObject;
+        QCOMPARE(properties(fake), properties(real));
+        QCOMPARE(members(fake, QMetaMethod::Method), members(real, QMetaMethod::Method));
+        const QStringList fakeSignals = members(fake, QMetaMethod::Signal);
+        for (const char *signal : {"notice(QString)", "signInFinished(bool,QString)"})
+            QVERIFY2(fakeSignals.contains(signal), signal);
     }
 
     void backendKnowsWhenADeviceIsOn()

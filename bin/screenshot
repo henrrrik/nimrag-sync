@@ -1,0 +1,69 @@
+#!/bin/sh
+# bin/screenshot [language] [output.png] [state.json]
+# The window with made-up state (tools/demo/state.json) and the default
+# accent, captured on screen: Qt's offscreen platform does not draw Material's
+# button backgrounds. Needs Hyprland and grim; the window floats beside the
+# pointer for a few seconds, then closes.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+LANGUAGE="${1:-en}"
+OUT="${2:-$ROOT/docs/screenshot.png}"
+STATE="${3:-$ROOT/tools/demo/state.json}"
+WIDTH=760
+# Tall enough for the longer languages (Swedish needs about 620).
+HEIGHT=640
+
+for tool in hyprctl grim python3 qmake6; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "bin/screenshot needs $tool" >&2; exit 1; }
+done
+
+mkdir -p "$ROOT/build/demo"
+cd "$ROOT/build/demo"
+qmake6 "$ROOT/tools/demo/demo.pro" >/dev/null
+make -s -j"$(nproc)"
+
+./nimrag-demo "$STATE" "$LANGUAGE" >/dev/null 2>&1 &
+PID=$!
+trap 'kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null || true' EXIT
+
+# The demo's window, found by its process; hyprctl takes Lua for dispatches.
+address=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    address=$(hyprctl clients -j | python3 -I -c "
+import json, sys
+print(next((c['address'] for c in json.load(sys.stdin) if c.get('pid') == $PID), ''))")
+    [ -n "$address" ] && break
+done
+[ -n "$address" ] || { echo "the demo window did not appear" >&2; exit 1; }
+
+# Away from the pointer, so it is not in the picture.
+x=$(hyprctl cursorpos | python3 -I -c "import sys; print(820 if int(sys.stdin.read().split(',')[0]) < 800 else 40)")
+for dispatch in "float({ action = 'enable', window = 'address:$address' })" \
+                "resize({ x = $WIDTH, y = $HEIGHT, window = 'address:$address' })" \
+                "move({ x = $x, y = 60, window = 'address:$address' })"; do
+    hyprctl eval "hl.dispatch(hl.dsp.window.$dispatch)" >/dev/null
+done
+sleep 1.5
+
+geometry() {
+    hyprctl clients -j | python3 -I -c "
+import json, sys
+c = next(c for c in json.load(sys.stdin) if c['address'] == '$address')
+print(f\"{c['at'][0]},{c['at'][1]} {c['size'][0]}x{c['size'][1]}\")"
+}
+# The pointer may have moved meanwhile: if it is over the window, move it to
+# the other side.
+over=$(hyprctl cursorpos | python3 -I -c "
+import sys
+cx, cy = (int(v) for v in sys.stdin.read().split(','))
+x, y, w, h = $(geometry | tr ' x' ',,')
+print(1 if x <= cx < x + w and y <= cy < y + h else 0)")
+if [ "$over" = 1 ]; then
+    other=$([ "$x" = 40 ] && echo 820 || echo 40)
+    hyprctl eval "hl.dispatch(hl.dsp.window.move({ x = $other, y = 60, window = 'address:$address' }))" >/dev/null
+    sleep 1
+fi
+grim -g "$(geometry)" "$OUT"
+echo "Saved $OUT"

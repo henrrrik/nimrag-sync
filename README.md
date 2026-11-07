@@ -82,7 +82,15 @@ window (`src/`, built with qmake6), linked into one binary.
 bin/build      # cargo + qmake6 + make into build/nimrag-sync
 bin/test       # the Rust tests and the Qt tests (offscreen)
 bin/install    # makepkg -fsi: the app lands in the launcher
+bin/screenshot [language] [out.png] [state.json]
+               # the window with made-up state, captured on screen
 ```
+
+`bin/screenshot` runs the real window with `tools/demo/`'s `FakeBackend` instead of the Rust core,
+the state in `tools/demo/state.json`, the default accent and the language given (`en` when none),
+floats it beside the pointer for a few seconds and saves it with `grim` (to `docs/screenshot.png`
+by default). It needs Hyprland: Qt's offscreen platform does not draw Material's button
+backgrounds. `bin/test` checks that `FakeBackend` keeps up with `Backend`.
 
 ## Protocol notes
 
