@@ -47,6 +47,9 @@ agents. Each command takes `--json`, exits 0 or 1, and writes errors to stderr.
 | `nimrag-sync` or `nimrag-sync open` | open the window |
 | `nimrag-sync devices [--json]` | the connected inReach devices, their mode and software |
 | `nimrag-sync drive-mode [--apply] [--json]` | restart an inReach as a USB drive; a trial run without `--apply` |
+| `nimrag-sync app-mode [--apply] [--json]` | restart an inReach in its normal mode (it switches on); a trial run without `--apply` |
+| `nimrag-sync tables [--json]` | the tables the inReach has and their versions (read only; needs app mode) |
+| `nimrag-sync read-table <id> [--json]` | the rows of one table as the inReach sends them (read only; needs app mode) |
 
 ## Building
 
@@ -63,5 +66,6 @@ bin/install    # makepkg -fsi: the app lands in the launcher
 
 `docs/device-protocol.md` and `docs/server-protocol.md` describe what inReach
 Sync 1.4.47 does over USB and with Garmin's servers, read from its code.
+`docs/device-observations.md` records what a real inReach Mini answered.
 `docs/account-api-swagger.json` is the published description of Garmin's
 inReach account API.

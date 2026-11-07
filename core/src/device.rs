@@ -17,8 +17,31 @@ pub const SYSFS_HIDRAW: &str = "/sys/class/hidraw";
 pub const TIMEOUT: Duration = Duration::from_millis(1800);
 
 pub const VERSION: u16 = 0xA001;
+pub const TABLE_VERSION: u16 = 0xFC01;
+pub const READ_TABLE: u16 = 0xFC02;
 pub const RESET_FOR_MASS_STORAGE: u16 = 0xFC07;
 pub const READ_APP_MODE: u16 = 0xFC08;
+pub const RESET_DEVICE_REQ: u16 = 0xAAFE;
+
+/// The tables inReach Sync knows (inReachSE.Tables), by their ID on the device.
+pub const TABLES: &[(u8, &str)] = &[
+    (1, "Contacts"),
+    (2, "TrackPoints"),
+    (3, "Messages"),
+    (4, "MessageThreads"),
+    (5, "Conversations"),
+    (6, "Words"),
+    (7, "Settings"),
+    (8, "Configuration"),
+    (9, "SyncData"),
+    (10, "EventLog"),
+    (12, "Forms"),
+    (13, "FormFields"),
+    (14, "Waypoints"),
+    (15, "TrackBlocks"),
+    (16, "Routes"),
+    (18, "Locations"),
+];
 
 /// The USB IDs inReach Sync looks for (ConnectedDevices.cs).
 pub const KNOWN: &[(u16, u16, &str)] = &[
@@ -243,6 +266,39 @@ impl<T: Transport> InReach<T> {
         Version::parse(&m.data).ok_or(Error::NoAnswer)
     }
 
+    /// The version of a table; `None` when the device has no such table (0xFF).
+    pub fn table_version(&mut self, table: u8) -> Result<Option<u8>, Error> {
+        let m = self.request(TABLE_VERSION, &[table])?;
+        // DeLormeBinary.TableVersion takes a reply without data as version 0.
+        match m.data.first().copied().unwrap_or(0) {
+            0xFF => Ok(None),
+            v => Ok(Some(v)),
+        }
+    }
+
+    /// The rows of a table as the device sends them: CSV text, `\r\n`-separated,
+    /// without a header row. The device streams it in READ_TABLE messages and
+    /// ends with one without data; each part restarts the timeout.
+    pub fn read_table(&mut self, table: u8, version: u8) -> Result<String, Error> {
+        self.drain()?;
+        self.send(READ_TABLE, &[table, version])?;
+        let mut text = Vec::new();
+        loop {
+            let m = self.receive(READ_TABLE, TIMEOUT)?.ok_or(Error::NoAnswer)?;
+            if m.data.is_empty() {
+                return Ok(String::from_utf8_lossy(&text).into_owned());
+            }
+            text.extend_from_slice(&m.data);
+        }
+    }
+
+    /// The device restarts in its normal (app) mode, as inReach Sync has it do
+    /// before a sync; no answer comes, it leaves the bus.
+    pub fn restart_app_mode(&mut self) -> Result<(), Error> {
+        self.drain()?;
+        self.send(RESET_DEVICE_REQ, &[])
+    }
+
     /// The device restarts as a USB drive; no answer comes, it leaves the bus.
     pub fn switch_to_drive(&mut self) -> Result<(), Error> {
         self.drain()?;
@@ -261,6 +317,8 @@ pub(crate) mod tests {
         pub incoming: VecDeque<Vec<u8>>,
         pub written: Vec<Vec<u8>>,
         pub answers: Vec<(u16, Vec<u8>)>,
+        /// Several messages of the request's code, queued once it is written.
+        pub streams: Vec<(u16, Vec<Vec<u8>>)>,
     }
 
     impl Fake {
@@ -282,6 +340,13 @@ pub(crate) mod tests {
             if let Some(i) = self.answers.iter().position(|(c, _)| *c == code) {
                 let (c, d) = self.answers.remove(i);
                 self.queue(c, &d);
+            }
+            if let Some(i) = self.streams.iter().position(|(c, _)| *c == code) {
+                let (c, parts) = self.streams.remove(i);
+                self.queue(0x2222, b"unrelated");
+                for d in parts {
+                    self.queue(c, &d);
+                }
             }
             Ok(())
         }
@@ -310,6 +375,39 @@ pub(crate) mod tests {
         assert_eq!(v.firmware, "3.90.1101380");
         assert_eq!(v.gps_firmware, "GNSSLIB_7.3.14.95_GNU");
         assert_eq!(dev.app_mode().unwrap(), AppMode::Charger);
+    }
+
+    #[test]
+    fn table_version_and_absent_tables() {
+        let mut fake = Fake::default();
+        fake.answers.push((TABLE_VERSION, vec![5]));
+        fake.answers.push((TABLE_VERSION, vec![0xFF]));
+        let mut dev = InReach::new(fake);
+        assert_eq!(dev.table_version(1).unwrap(), Some(5));
+        assert_eq!(dev.table_version(11).unwrap(), None);
+        let sent = &dev.transport.written;
+        assert_eq!(sent[0][3 + 8], 1); // the table byte after the 8-byte header
+        assert_eq!(sent[1][3 + 8], 11);
+    }
+
+    #[test]
+    fn read_table_puts_the_stream_together() {
+        let mut fake = Fake::default();
+        fake.queue(0x1111, b"stale"); // drained before the request
+        // Once the request is written: another message, two parts and the end.
+        fake.streams.push((READ_TABLE, vec![b"1,1,Ada,".to_vec(), b"Lovelace\r\n".to_vec(), vec![]]));
+        let mut dev = InReach::new(fake);
+        assert_eq!(dev.read_table(1, 5).unwrap(), "1,1,Ada,Lovelace\r\n");
+        let request = &dev.transport.written[0];
+        assert_eq!(&request[3 + 8..3 + 10], &[1, 5]);
+    }
+
+    #[test]
+    fn read_table_without_its_end_is_no_answer() {
+        let mut fake = Fake::default();
+        fake.streams.push((READ_TABLE, vec![b"1,1,Ada".to_vec()]));
+        let mut dev = InReach::new(fake);
+        assert!(matches!(dev.read_table(1, 5), Err(Error::NoAnswer)));
     }
 
     #[test]

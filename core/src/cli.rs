@@ -12,6 +12,10 @@ Usage: nimrag-sync [open]                  open the window
        nimrag-sync devices [--json]          the connected inReach devices, their mode and software
        nimrag-sync drive-mode [--apply] [--json]
                                              restart an inReach as a USB drive (a trial run without --apply)
+       nimrag-sync app-mode [--apply] [--json]
+                                             restart an inReach in its normal mode (a trial run without --apply)
+       nimrag-sync tables [--json]           the tables the inReach has, and their versions (read only)
+       nimrag-sync read-table <id> [--json]  the rows of one table as the inReach sends them (read only)
        nimrag-sync help                      this text
 ";
 
@@ -22,7 +26,8 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
 
 pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let command = args.get(1).map(String::as_str).unwrap_or("help");
-    let flags: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+    let rest: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+    let (flags, operands): (Vec<&str>, Vec<&str>) = rest.iter().partition(|a| a.starts_with("--"));
     let json = flags.contains(&"--json");
     let apply = flags.contains(&"--apply");
     if let Some(unknown) = flags.iter().find(|f| !["--json", "--apply"].contains(f)) {
@@ -32,6 +37,15 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
     match command {
         "devices" => devices(sysfs, json, out, err),
         "drive-mode" => drive_mode(sysfs, apply, json, out, err),
+        "app-mode" => app_mode(sysfs, apply, json, out, err),
+        "tables" => tables(sysfs, json, out, err),
+        "read-table" => match operands.first().and_then(|t| t.parse::<u8>().ok()) {
+            Some(id) => read_table(sysfs, id, json, out, err),
+            None => {
+                let _ = writeln!(err, "nimrag-sync: read-table needs a table ID (see `nimrag-sync tables`)");
+                1
+            }
+        },
         "help" | "--help" | "-h" => {
             let _ = write!(out, "{USAGE}");
             0
@@ -109,6 +123,107 @@ fn drive_mode(sysfs: &Path, apply: bool, json: bool, out: &mut dyn Write, err: &
     0
 }
 
+/// The first inReach, opened, with an error line written when there is none.
+fn open_first(sysfs: &Path, err: &mut dyn Write) -> Option<device::InReach<device::Hidraw>> {
+    let Some(found) = device::find(sysfs).into_iter().next() else {
+        let _ = writeln!(err, "No inReach is connected over USB.");
+        return None;
+    };
+    match device::InReach::open(&found) {
+        Ok(dev) => Some(dev),
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            None
+        }
+    }
+}
+
+fn app_mode(sysfs: &Path, apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let Some(mut dev) = open_first(sysfs, err) else { return 1 };
+    let mode = match dev.app_mode() {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return 1;
+        }
+    };
+    let already = mode == device::AppMode::App;
+    let restarted = apply && !already;
+    if restarted && let Err(e) = dev.restart_app_mode() {
+        let _ = writeln!(err, "{e}");
+        return 1;
+    }
+    if json {
+        let answer = serde_json::json!({ "mode": mode, "already_on": already, "applied": apply, "restarted": restarted });
+        let _ = writeln!(out, "{answer:#}");
+    } else if already {
+        let _ = writeln!(out, "The inReach is on (app mode) already.");
+    } else if restarted {
+        let _ = writeln!(out, "The inReach restarts in its normal mode; it switches on.");
+    } else {
+        let _ = writeln!(
+            out,
+            "The inReach is in {} mode. With --apply it restarts in its normal mode and switches on.",
+            mode_name(&mode)
+        );
+    }
+    0
+}
+
+fn tables(sysfs: &Path, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let Some(mut dev) = open_first(sysfs, err) else { return 1 };
+    let mut rows = Vec::new();
+    for &(id, name) in device::TABLES {
+        match dev.table_version(id) {
+            Ok(version) => rows.push(serde_json::json!({ "id": id, "name": name, "version": version })),
+            Err(e) => {
+                let _ = writeln!(err, "table {id} ({name}): {e}");
+                return 1;
+            }
+        }
+    }
+    if json {
+        let _ = writeln!(out, "{:#}", serde_json::Value::Array(rows));
+    } else {
+        for r in &rows {
+            let version = r["version"].as_u64().map(|v| format!("version {v}")).unwrap_or_else(|| "absent".into());
+            let _ = writeln!(out, "{:>3}  {:<15} {version}", r["id"], r["name"].as_str().unwrap_or(""));
+        }
+    }
+    0
+}
+
+fn read_table(sysfs: &Path, id: u8, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let Some(mut dev) = open_first(sysfs, err) else { return 1 };
+    let version = match dev.table_version(id) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            let _ = writeln!(err, "The inReach has no table {id}.");
+            return 1;
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return 1;
+        }
+    };
+    match dev.read_table(id, version) {
+        Ok(text) if json => {
+            let rows: Vec<&str> = text.split(['\r', '\n']).filter(|l| !l.is_empty()).collect();
+            let answer = serde_json::json!({ "id": id, "version": version, "rows": rows });
+            let _ = writeln!(out, "{answer:#}");
+            0
+        }
+        Ok(text) => {
+            let _ = write!(out, "{}", text.replace("\r\n", "\n"));
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
+    }
+}
+
 fn mode_name(m: &device::AppMode) -> &'static str {
     match m {
         device::AppMode::App => "app",
@@ -149,5 +264,13 @@ mod tests {
         assert!(err.contains("unknown command flash") && err.contains("Usage"));
         assert_eq!(run_args(dir.path(), &["devices", "--force"]).0, 1);
         assert_eq!(run_args(dir.path(), &["help"]).0, 0);
+        let (code, _, err) = run_args(dir.path(), &["read-table"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("needs a table ID"));
+        for command in ["tables", "app-mode"] {
+            let (code, _, err) = run_args(dir.path(), &[command]);
+            assert_eq!(code, 1);
+            assert!(err.contains("No inReach"));
+        }
     }
 }
