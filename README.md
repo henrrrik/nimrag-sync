@@ -10,15 +10,20 @@ command line for everything the window does.
 ## Install
 
 Packages for Arch Linux and Omarchy, x86_64 and aarch64, are on the
-[releases page](https://github.com/henrrrik/nimrag-sync/releases). pacman installs one straight from
-its address:
+[releases page](https://github.com/henrrrik/nimrag-sync/releases). Download one, check it against the
+release's `SHA256SUMS`, and install the file:
 
 ```sh
-sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+sudo pacman -U nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
-(`aarch64` in place of `x86_64` on ARM, such as an Asahi Mac.) The package brings a udev rule that
-lets the user at the computer reach the inReach, so no `sudo` is needed afterwards.
+(`aarch64` in place of `x86_64` on ARM, such as an Asahi Mac.) The packages are not signed, so pacman
+installs them from a file you have checked, not straight from their address: with Arch's default
+settings `pacman -U <address>` asks for a signature and stops without one. The package brings a udev
+rule that lets the user at the computer reach the inReach, so no `sudo` is needed afterwards.
 `packaging/PKGBUILD` builds the same package from a release's source.
 
 ## Using it
