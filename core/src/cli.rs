@@ -332,6 +332,20 @@ fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     }
     show_plan(out, &p.plan);
     show_places(out, &p.places);
+    if p.device_commands.is_empty() {
+        let _ = writeln!(out, "Device commands: none from Garmin");
+    } else {
+        for c in &p.device_commands {
+            let tables: Vec<String> = c.tables.iter().map(u8::to_string).collect();
+            let _ = writeln!(
+                out,
+                "Device command {}: {} bytes for table {} (written as Garmin sent it)",
+                c.transaction_id.map(|t| t.to_string()).unwrap_or_else(|| "?".into()),
+                c.bytes,
+                tables.join(", ")
+            );
+        }
+    }
     let _ = writeln!(
         out,
         "{}",
@@ -446,6 +460,10 @@ fn sync(apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i3
                 }
                 if let Some(n) = applied.routes_from_garmin {
                     let _ = writeln!(out, "Routes: Garmin sent {n}.");
+                }
+                for c in &applied.device_commands {
+                    let status = if c.status_code == crate::commands::ACKED { "ran" } else { "failed" };
+                    let _ = writeln!(out, "Device command {}: {status}.", c.transaction_id.map(|t| t.to_string()).unwrap_or_else(|| "?".into()));
                 }
                 if let Some(n) = applied.tracks_taken {
                     let _ = writeln!(out, "Tracks: Garmin took {n} blocks.");

@@ -335,6 +335,16 @@ impl<T: Transport> InReach<T> {
         if text.is_empty() { Ok(()) } else { Err(Error::Refused(text)) }
     }
 
+    /// Writes a script whose first two bytes are already the table and its
+    /// version (WriteTableBytes, for Garmin's device commands).
+    pub fn write_table_bytes(&mut self, data: &[u8]) -> Result<(), Error> {
+        self.drain()?;
+        self.send(WRITE_TABLE, data)?;
+        let answer = self.receive(WRITE_TABLE, WRITE_TIMEOUT)?.ok_or(Error::NoAnswer)?;
+        let text = String::from_utf8_lossy(&answer.data).trim().to_string();
+        if text.is_empty() { Ok(()) } else { Err(Error::Refused(text)) }
+    }
+
     /// Writes `lines` in as few scripts as fit in `max` bytes each, as
     /// BatchWriter.BatchWriteTable does (a line joins a script while the two
     /// stay under `max`). A line alone longer than that is refused; one exactly

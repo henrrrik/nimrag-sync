@@ -300,6 +300,59 @@ impl Client {
         Ok(r.map(|i| i.insert_count).unwrap_or(0))
     }
 
+    /// Garmin's device commands for the device (GetDeviceCommands); the
+    /// device's tracking interval (setting 24) goes along when known.
+    pub fn device_commands(
+        &self,
+        sync: &SyncInfo,
+        imei: &str,
+        tracking_interval: Option<i64>,
+        who: &Credentials,
+    ) -> Result<Option<Vec<crate::commands::DeviceCommand>>, Error> {
+        #[derive(Deserialize)]
+        struct Commands {
+            #[serde(rename = "DeviceCommands")]
+            device_commands: Option<Vec<crate::commands::DeviceCommand>>,
+        }
+        let url = format!("{}/V1/Sync/Plans", sync.sync_url.trim_end_matches('/'));
+        let interval = tracking_interval.map(|i| i.to_string());
+        let mut query = vec![("imei", imei)];
+        if let Some(i) = &interval {
+            query.push(("trackingInterval", i));
+        }
+        let r: Option<Commands> = self.get_json(&url, &query, Some(who), "the device commands")?;
+        Ok(r.and_then(|c| c.device_commands))
+    }
+
+    /// Tells Garmin how each device command went (AcknowledgeDeviceCommands).
+    pub fn acknowledge_device_commands(
+        &self,
+        sync: &SyncInfo,
+        imei: &str,
+        commands: &[crate::commands::DeviceCommand],
+        who: &Credentials,
+    ) -> Result<(), Error> {
+        let url = format!("{}/V1/Sync/Plans", sync.sync_url.trim_end_matches('/'));
+        let body = serde_json::json!({ "DeviceCommands": commands });
+        let response = self
+            .agent
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("X-CultureCode", "en-US")
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("Authorization", basic(who))
+            .query("imei", imei)
+            .send(body.to_string())
+            .map_err(|e| Error::Network(e.to_string()))?;
+        let status = response.status().as_u16();
+        log::info!("POST {url} -> {status}");
+        match status {
+            200 => Ok(()),
+            401 => Err(Error::Unauthorized),
+            _ => Err(Error::Status { status, what: "the device commands' acknowledgement".into() }),
+        }
+    }
+
     /// A POST with a JSON body, its JSON answer read (`None` for `null`).
     fn post_json<T: DeserializeOwned>(
         &self,
@@ -667,6 +720,30 @@ mod tests {
         let requests = seen.lock().unwrap();
         let waypoints = requests.iter().find(|r| r.starts_with("POST /V1/Sync/Waypoints")).unwrap();
         assert!(waypoints.contains("Basic "));
+    }
+
+    #[test]
+    fn device_commands_and_their_acknowledgement() {
+        let (base, seen) = serve(|line| {
+            let path = line.split(' ').nth(1).unwrap_or("");
+            match (line.split(' ').next().unwrap_or(""), path) {
+                ("GET", "/V1/Sync/Plans?imei=1&trackingInterval=600") => (
+                    200,
+                    r#"{"DeviceCommands":[{"TransactionId":9,"StatusCode":5,"DeviceData":"BwFpLDI0LDYwMA0=","ErrorMsg":null}]}"#.into(),
+                    None,
+                ),
+                ("GET", "/V1/Sync/Plans?imei=1") => (200, r#"{"DeviceCommands":[]}"#.into(), None),
+                ("POST", "/V1/Sync/Plans?imei=1") => (200, String::new(), None),
+                _ => (404, String::new(), None),
+            }
+        });
+        let client = Client::new("http://unused.invalid");
+        let sync = SyncInfo { sync_url: base, provisioned: true };
+        let cmds = client.device_commands(&sync, "1", Some(600), &who()).unwrap().unwrap();
+        assert_eq!(cmds[0].transaction_id, Some(9));
+        assert!(client.device_commands(&sync, "1", None, &who()).unwrap().unwrap().is_empty());
+        client.acknowledge_device_commands(&sync, "1", &cmds, &who()).unwrap();
+        assert!(seen.lock().unwrap().iter().any(|r| r.starts_with("POST /V1/Sync/Plans?imei=1 ")));
     }
 
     #[test]

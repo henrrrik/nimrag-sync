@@ -61,6 +61,10 @@ ColumnLayout {
                      : (places.tracks_to_send > 0 ? qsTr("%1 track blocks to send").arg(places.tracks_to_send) : qsTr("nothing new to send")),
                        changed: places.tracks_to_send > 0 })
         }
+        var cmds = section.preview.device_commands
+        if (cmds)
+            out.push({ title: qsTr("Device commands"), text: cmds.length === 0 ? qsTr("none from Garmin")
+                     : qsTr("%1 from Garmin, run as sent").arg(cmds.length), changed: cmds.length > 0 })
         var s = plan.settings
         if (s.answered)
             out.push({ title: qsTr("Settings"), text: s.changed.length ? qsTr("%1 to change, %2 unchanged").arg(s.changed.length).arg(s.unchanged)

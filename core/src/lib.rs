@@ -3,6 +3,7 @@
 //! library through `ffi`, and the command line lives in `cli`.
 
 pub mod cli;
+pub mod commands;
 pub mod credentials;
 pub mod csv;
 pub mod device;

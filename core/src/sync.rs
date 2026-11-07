@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use crate::credentials::{self, Keyring};
 use crate::device::{self, AppMode, Found, InReach};
+use crate::commands::{self, DeviceCommand};
 use crate::places::{self, Route, Waypoint};
 use crate::plan::{self, FromServer, Plan, Sent};
 use crate::server::{self, Client, Credentials, FirmwareOffer, SyncInfo};
@@ -58,6 +59,23 @@ impl PlaceTables {
     }
 }
 
+/// One of Garmin's device commands, as the preview shows it: not its contents.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandSummary {
+    pub transaction_id: Option<i64>,
+    /// The tables its sub-commands write (each one's first byte).
+    pub tables: Vec<u8>,
+    pub bytes: usize,
+}
+
+fn summarize(c: &DeviceCommand) -> CommandSummary {
+    let data = c.data().unwrap_or_default();
+    let text = String::from_utf8_lossy(&data);
+    let mut tables: Vec<u8> = commands::subcommands(&text).iter().filter_map(|s| s.as_bytes().first().copied()).collect();
+    tables.dedup();
+    CommandSummary { transaction_id: c.transaction_id, tables, bytes: data.len() }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Preview {
     pub device: String,
@@ -68,6 +86,7 @@ pub struct Preview {
     pub firmware_update: Option<FirmwareOffer>,
     pub plan: Plan,
     pub places: Places,
+    pub device_commands: Vec<CommandSummary>,
 }
 
 /// Everything a sync needs, read from the device and Garmin's service.
@@ -87,6 +106,7 @@ struct Gathered {
     firmware_update: Option<FirmwareOffer>,
     plan: Plan,
     places: PlaceTables,
+    device_commands: Vec<DeviceCommand>,
 }
 
 /// The firmware version as inReach Sync reads it (ParseHardwareVersion): the
@@ -157,6 +177,11 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
         Some(_) => read_if(&mut dev, places::ROUTES, places::ROUTES_VERSION)?,
         None => None,
     };
+    // Kept in the backup only: Garmin's device commands may write it.
+    let configuration_text = match dev.table_version(8).map_err(|e| e.to_string())? {
+        Some(v) => Some(dev.read_table(8, v).map_err(|e| e.to_string())?),
+        None => None,
+    };
     drop(dev);
 
     let info = client.sync_info(&imei).map_err(|e| e.to_string())?;
@@ -188,6 +213,16 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
     if let Some(text) = &routes_text {
         place_tables.routes = Some((places::ROUTES_VERSION, places::routes_from_device(text)?));
     }
+    // GetCurrentTrackingInterval: setting 24, when it reads as a number.
+    let tracking_interval = crate::csv::parse(&settings_text)
+        .into_iter()
+        .find(|r| r.first().map(|v| v.trim()) == Some("24"))
+        .and_then(|r| r.get(1).and_then(|v| v.trim().parse::<i32>().ok()))
+        .map(i64::from);
+    let device_commands = client
+        .device_commands(&info, &imei, tracking_interval, &who)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
 
     let modified = |kind: i32| {
         status
@@ -224,6 +259,7 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
             waypoints_text.map(|t| (places::WAYPOINTS, t)),
             track_blocks_text.map(|t| (places::TRACK_BLOCKS, t)),
             routes_text.map(|t| (places::ROUTES, t)),
+            configuration_text.map(|t| (8, t)),
         ]
         .into_iter()
         .flatten()
@@ -234,6 +270,7 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
         firmware_update,
         plan,
         places: place_tables,
+        device_commands,
     })
 }
 
@@ -248,6 +285,7 @@ pub fn preview(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) 
         last_synced: g.last_synced,
         firmware_update: g.firmware_update,
         places: g.places.summary(),
+        device_commands: g.device_commands.iter().map(summarize).collect(),
         plan: g.plan,
     })
 }
@@ -308,6 +346,8 @@ pub struct Applied {
     pub waypoints_from_garmin: Option<usize>,
     pub routes_from_garmin: Option<usize>,
     pub tracks_taken: Option<i64>,
+    /// Garmin's device commands run, as acknowledged (each one's status).
+    pub device_commands: Vec<DeviceCommand>,
     /// The mode the device came back in after its restart (`None`: not seen).
     pub mode_after_restart: Option<AppMode>,
 }
@@ -438,6 +478,56 @@ pub fn apply(
         routes_from_garmin = Some(merged.len());
     }
 
+    // Device commands (ExecuteDeviceCommands, then AcknowledgeDeviceCommands):
+    // each sub-command written as Garmin sent it; Garmin hears how each went,
+    // and a failed one stops the sync here, before its time and the restart.
+    let mut ran = g.device_commands.clone();
+    if !ran.is_empty() {
+        step("Running Garmin's device commands");
+        let mut failures = Vec::new();
+        for c in &mut ran {
+            let Some(data) = c.data() else {
+                failures.push(format!("{:?}: no data", c.transaction_id));
+                continue;
+            };
+            let text = String::from_utf8_lossy(&data).into_owned();
+            let mut ok = true;
+            for item in commands::subcommands(&text) {
+                let bytes = commands::subcommand_bytes(&item);
+                if bytes.len() > commands::MAX_SUBCOMMAND {
+                    failures.push(format!("{:?}: a sub-command is too long ({} bytes)", c.transaction_id, bytes.len()));
+                    ok = false;
+                    break;
+                }
+                let refusal = match dev.write_table_bytes(&bytes) {
+                    Ok(()) => None,
+                    Err(device::Error::Refused(t)) => Some(t),
+                    Err(device::Error::NoAnswer) => Some("Response not received.".to_string()),
+                    Err(other) => return Err(other.to_string()),
+                };
+                if let Some(t) = refusal {
+                    c.status_code = commands::NACKED;
+                    c.error_msg = Some(t.clone());
+                    failures.push(format!("{:?}: {t}", c.transaction_id));
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                c.status_code = commands::ACKED;
+            }
+        }
+        client.acknowledge_device_commands(&g.info, &g.imei, &ran, &g.who).map_err(s)?;
+        if !failures.is_empty() {
+            return Err(format!(
+                "Garmin's device commands did not all run ({}). inReach Sync stops a sync here, so the time of \
+                 the sync was not written and the inReach was not restarted. Its tables as they were are kept in {}.",
+                failures.join("; "),
+                backup_dir.display()
+            ));
+        }
+    }
+
     if let Some(t) = time(plan::SYNC_TIME) {
         step("Writing the time of the sync");
         dev.batch_write(settings, sv, &t, max).map_err(e)?;
@@ -460,6 +550,7 @@ pub fn apply(
         waypoints_from_garmin,
         routes_from_garmin,
         tracks_taken,
+        device_commands: ran,
         mode_after_restart,
     })
 }
