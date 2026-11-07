@@ -7,7 +7,7 @@ pkgdesc='Keep an inReach in sync on Linux: software, contacts, messages and sett
 arch=('x86_64' 'aarch64')
 url='https://github.com/henrrrik/nimrag-sync'
 license=('MIT')
-depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'libsecret')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'libsecret' 'udisks2')
 makedepends=('gcc' 'make' 'cargo')
 # makepkg's LTO turns the C parts of Rust crates (ring) into GCC bytecode that
 # the final link, which is not LTO, cannot use.
