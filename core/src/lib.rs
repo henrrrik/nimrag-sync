@@ -8,6 +8,7 @@ pub mod csv;
 pub mod device;
 pub mod ffi;
 pub mod frame;
+pub mod places;
 pub mod plan;
 pub mod server;
 pub mod status;

@@ -248,6 +248,91 @@ impl Client {
         self.acknowledge(sync, what, &[("synced", "true"), ("imei", imei)], who)
     }
 
+    /// When the newest track point Garmin has for the device is, as Unix
+    /// seconds; 1970 when it has none (GetNewestTrackPointTime).
+    pub fn newest_track_point(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<i64, Error> {
+        #[derive(Deserialize)]
+        struct Newest {
+            #[serde(rename = "Date")]
+            date: Option<String>,
+        }
+        let r: Option<Newest> = self.sync_get(sync, "Tracks", imei, who, "the newest track point")?;
+        Ok(r.and_then(|n| n.date).as_deref().and_then(unix_seconds).unwrap_or(0))
+    }
+
+    /// Sends the device's waypoints; Garmin answers with the merged list (UpdateWaypoints).
+    pub fn update_waypoints(
+        &self,
+        sync: &SyncInfo,
+        imei: &str,
+        waypoints: &[crate::places::Waypoint],
+        who: &Credentials,
+    ) -> Result<Vec<crate::places::Waypoint>, Error> {
+        let body = serde_json::json!({ "imei": imei_number(imei), "waypoints": waypoints });
+        let list: Option<Vec<crate::places::Waypoint>> = self.post_json(sync, "Waypoints", &body, who, "the waypoints")?;
+        Ok(list.unwrap_or_default())
+    }
+
+    /// Sends the device's routes; Garmin answers with the merged list, each
+    /// route with its track (UpdateRoutes).
+    pub fn update_routes(
+        &self,
+        sync: &SyncInfo,
+        imei: &str,
+        track_block_version: u8,
+        routes: &[crate::places::Route],
+        who: &Credentials,
+    ) -> Result<Vec<crate::places::Route>, Error> {
+        let body = serde_json::json!({ "imei": imei_number(imei), "trackBlockVersion": track_block_version, "routes": routes });
+        let list: Option<Vec<crate::places::Route>> = self.post_json(sync, "Routes", &body, who, "the routes")?;
+        Ok(list.unwrap_or_default())
+    }
+
+    /// Sends track blocks as the device has them (InsertTracks); how many Garmin took.
+    pub fn insert_tracks(&self, sync: &SyncInfo, imei: &str, table_version: u8, blocks: &[String], who: &Credentials) -> Result<i64, Error> {
+        #[derive(Deserialize)]
+        struct Inserted {
+            #[serde(rename = "insertCount", default)]
+            insert_count: i64,
+        }
+        let body = serde_json::json!({ "imei": imei_number(imei), "tableVersion": table_version, "trackBlocks": blocks });
+        let r: Option<Inserted> = self.post_json(sync, "Tracks", &body, who, "the tracks")?;
+        Ok(r.map(|i| i.insert_count).unwrap_or(0))
+    }
+
+    /// A POST with a JSON body, its JSON answer read (`None` for `null`).
+    fn post_json<T: DeserializeOwned>(
+        &self,
+        sync: &SyncInfo,
+        what: &str,
+        body: &serde_json::Value,
+        who: &Credentials,
+        label: &str,
+    ) -> Result<Option<T>, Error> {
+        let url = format!("{}/V1/Sync/{what}", sync.sync_url.trim_end_matches('/'));
+        let mut response = self
+            .agent
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("X-CultureCode", "en-US")
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("Authorization", basic(who))
+            .send(body.to_string())
+            .map_err(|e| Error::Network(e.to_string()))?;
+        let status = response.status().as_u16();
+        log::info!("POST {url} -> {status}");
+        match status {
+            200 => {}
+            401 => return Err(Error::Unauthorized),
+            _ => return Err(Error::Status { status, what: label.into() }),
+        }
+        let text = response.body_mut().read_to_string().map_err(|e| Error::Network(e.to_string()))?;
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_str(&text).map_err(|e| Error::Unexpected { what: label.into(), detail: e.to_string() })
+    }
+
     /// A POST as inReach Sync sends them: the JSON string "{}" (Newtonsoft
     /// serializes the C# string "{}"), the answer only checked for 200.
     fn acknowledge(&self, sync: &SyncInfo, what: &str, query: &[(&str, &str)], who: &Credentials) -> Result<(), Error> {
@@ -319,12 +404,25 @@ impl Client {
     }
 }
 
-/// Seconds since 1970 for an ISO 8601 time as Garmin writes it
-/// ("2020-09-17T15:11:23.0610421Z"), the fraction dropped as .NET's
-/// `(long)TotalSeconds` drops it. Only UTC ("Z", or no zone) is taken.
+/// Seconds since 1970 for an ISO 8601 time as Garmin and the device write it
+/// ("2020-09-17T15:11:23.0610421Z", "2021-07-03T10:20:30Z",
+/// "2023-05-06T07:08:09+02:00"), the fraction dropped as .NET's
+/// `(long)TotalSeconds` drops it. A time without a zone is taken as UTC.
 pub fn unix_seconds(text: &str) -> Option<i64> {
-    let text = text.strip_suffix('Z').unwrap_or(text);
+    let text = text.trim();
     let (date, time) = text.split_once('T')?;
+    // The zone: "Z", "+hh:mm" or "-hh:mm" after the time.
+    let (time, offset) = if let Some(t) = time.strip_suffix('Z') {
+        (t, 0)
+    } else if let Some(i) = time.rfind(['+', '-']) {
+        let (t, zone) = time.split_at(i);
+        let sign = if zone.starts_with('-') { -1 } else { 1 };
+        let mut z = zone[1..].split(':').map(|v| v.parse::<i64>().ok());
+        let (zh, zm) = (z.next()??, z.next().flatten().unwrap_or(0));
+        (t, sign * (zh * 3600 + zm * 60))
+    } else {
+        (time, 0)
+    };
     let mut d = date.split('-').map(|v| v.parse::<i64>().ok());
     let (y, m, day) = (d.next()??, d.next()??, d.next()??);
     let time = time.split('.').next()?;
@@ -340,7 +438,12 @@ pub fn unix_seconds(text: &str) -> Option<i64> {
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + h * 3600 + min * 60 + sec)
+    Some(days * 86_400 + h * 3600 + min * 60 + sec - offset)
+}
+
+/// The IMEI as inReach Sync sends it in a JSON body: a number (a C# long).
+fn imei_number(imei: &str) -> serde_json::Value {
+    imei.parse::<i64>().map(serde_json::Value::from).unwrap_or_else(|_| serde_json::Value::from(imei))
 }
 
 fn basic(who: &Credentials) -> String {
@@ -537,6 +640,36 @@ mod tests {
     }
 
     #[test]
+    fn waypoints_routes_and_tracks_go_as_json() {
+        let (base, seen) = serve(|line| {
+            let path = line.split(' ').nth(1).unwrap_or("");
+            match (line.split(' ').next().unwrap_or(""), path) {
+                ("GET", "/V1/Sync/Tracks?imei=300434000000001") => (200, r#"{"Date":"2026-11-05T00:00:00Z"}"#.into(), None),
+                ("POST", "/V1/Sync/Waypoints") => (
+                    200,
+                    r#"[{"SyncId":5,"SyncStatus":0,"HiddenOnDevice":false,"IconIndex":40,"Name":"Tent","Latitude":61.234567,"Longitude":14.765432,"CreateDate":"2021-07-03T10:20:30Z","ModifiedDate":null}]"#.into(),
+                    None,
+                ),
+                ("POST", "/V1/Sync/Routes") => (200, "[]".into(), None),
+                ("POST", "/V1/Sync/Tracks") => (200, r#"{"insertCount":2}"#.into(), None),
+                _ => (404, String::new(), None),
+            }
+        });
+        let client = Client::new("http://unused.invalid");
+        let sync = SyncInfo { sync_url: base, provisioned: true };
+        let imei = "300434000000001";
+        assert_eq!(client.newest_track_point(&sync, imei, &who()).unwrap(), unix_seconds("2026-11-05T00:00:00Z").unwrap());
+        let mine = crate::places::waypoints_from_device("1,7,0,0,1.5,2.25,,,\"A\"\r\n").unwrap();
+        let merged = client.update_waypoints(&sync, imei, &mine, &who()).unwrap();
+        assert_eq!(merged[0].latitude.to_string(), "61.234567");
+        assert!(client.update_routes(&sync, imei, 5, &[], &who()).unwrap().is_empty());
+        assert_eq!(client.insert_tracks(&sync, imei, 5, &["0,0,1".into()], &who()).unwrap(), 2);
+        let requests = seen.lock().unwrap();
+        let waypoints = requests.iter().find(|r| r.starts_with("POST /V1/Sync/Waypoints")).unwrap();
+        assert!(waypoints.contains("Basic "));
+    }
+
+    #[test]
     fn a_null_answer_is_no_answer() {
         let (base, _) = serve(|_| (200, "null".into(), None));
         let client = Client::new("http://unused.invalid");
@@ -551,6 +684,8 @@ mod tests {
         assert_eq!(unix_seconds("2020-09-19T07:21:32.2864995Z"), Some(1600500092));
         assert_eq!(unix_seconds("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(unix_seconds("2024-02-29T12:00:00"), Some(1709208000));
+        assert_eq!(unix_seconds("2023-05-06T07:08:09+02:00"), unix_seconds("2023-05-06T05:08:09Z"));
+        assert_eq!(unix_seconds("2023-05-06T07:08:09.5-01:30"), unix_seconds("2023-05-06T08:38:09Z"));
         assert_eq!(unix_seconds("yesterday"), None);
         assert_eq!(unix_seconds("2024-13-01T00:00:00Z"), None);
     }

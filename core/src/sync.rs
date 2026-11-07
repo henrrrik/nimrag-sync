@@ -16,10 +16,47 @@ use serde::Serialize;
 
 use crate::credentials::{self, Keyring};
 use crate::device::{self, AppMode, Found, InReach};
+use crate::places::{self, Route, Waypoint};
 use crate::plan::{self, FromServer, Plan, Sent};
 use crate::server::{self, Client, Credentials, FirmwareOffer, SyncInfo};
 
 pub const SETTINGS: u8 = 7;
+
+/// Waypoints, routes and tracks on the device, as a sync would take them.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Places {
+    /// Each is `None` when the device's table is not a version inReach Sync syncs.
+    pub waypoints: Option<usize>,
+    pub waypoints_need_sync: bool,
+    pub routes: Option<usize>,
+    pub routes_need_sync: bool,
+    /// The high-detail track blocks Garmin does not have yet.
+    pub tracks_to_send: Option<usize>,
+    pub newest_track_point: Option<String>,
+}
+
+/// The device's waypoints, routes and track blocks, read for a sync.
+#[derive(Default)]
+struct PlaceTables {
+    waypoints: Option<(u8, Vec<Waypoint>)>,
+    routes: Option<(u8, Vec<Route>)>,
+    track_blocks: Option<(u8, String)>,
+    newest_track_point: Option<i64>,
+    tracks_to_send: Vec<String>,
+}
+
+impl PlaceTables {
+    fn summary(&self) -> Places {
+        Places {
+            waypoints: self.waypoints.as_ref().map(|w| w.1.len()),
+            waypoints_need_sync: self.waypoints.as_ref().is_some_and(|w| places::waypoints_need_sync(&w.1)),
+            routes: self.routes.as_ref().map(|r| r.1.len()),
+            routes_need_sync: self.routes.as_ref().is_some_and(|r| places::routes_need_sync(&r.1)),
+            tracks_to_send: self.track_blocks.as_ref().map(|_| self.tracks_to_send.len()),
+            newest_track_point: self.newest_track_point.map(places::utc_text),
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct Preview {
@@ -30,6 +67,7 @@ pub struct Preview {
     /// A firmware Garmin offers that the device does not have yet.
     pub firmware_update: Option<FirmwareOffer>,
     pub plan: Plan,
+    pub places: Places,
 }
 
 /// Everything a sync needs, read from the device and Garmin's service.
@@ -48,6 +86,7 @@ struct Gathered {
     last_synced: Option<String>,
     firmware_update: Option<FirmwareOffer>,
     plan: Plan,
+    places: PlaceTables,
 }
 
 /// The firmware version as inReach Sync reads it (ParseHardwareVersion): the
@@ -82,6 +121,15 @@ fn open_on(sysfs: &Path) -> Result<(Found, InReach<device::Hidraw>), String> {
     Ok((found, dev))
 }
 
+/// A table, when the device has it in `version`; `None` otherwise (inReach
+/// Sync skips the step then, TableIsSupported).
+fn read_if(dev: &mut InReach<device::Hidraw>, table: u8, version: u8) -> Result<Option<String>, String> {
+    match dev.table_version(table).map_err(|e| e.to_string())? {
+        Some(v) if v == version => Ok(Some(dev.read_table(table, v).map_err(|e| e.to_string())?)),
+        _ => Ok(None),
+    }
+}
+
 fn read(dev: &mut InReach<device::Hidraw>, table: u8, name: &str) -> Result<(u8, String), String> {
     let version = dev
         .table_version(table)
@@ -102,6 +150,13 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
         .ok_or("The inReach did not tell its IMEI.")?;
     let (contacts_version, contacts_text) = read(&mut dev, plan::CONTACTS, "Contacts")?;
     let (sync_data_version, sync_data_text) = read(&mut dev, plan::SYNC_DATA, "SyncData")?;
+    let waypoints_text = read_if(&mut dev, places::WAYPOINTS, places::WAYPOINTS_VERSION)?;
+    let track_blocks_text = read_if(&mut dev, places::TRACK_BLOCKS, places::TRACK_BLOCKS_VERSION)?;
+    // Routes need the TrackBlocks table too (DeviceRoutes.AreSupported).
+    let routes_text = match &track_blocks_text {
+        Some(_) => read_if(&mut dev, places::ROUTES, places::ROUTES_VERSION)?,
+        None => None,
+    };
     drop(dev);
 
     let info = client.sync_info(&imei).map_err(|e| e.to_string())?;
@@ -120,6 +175,19 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
     let presets = client.presets(&info, &imei, &who).map_err(|e| e.to_string())?;
     let quick_texts = client.quick_texts(&info, &imei, &who).map_err(|e| e.to_string())?;
     let settings = client.settings(&info, &imei, &who).map_err(|e| e.to_string())?;
+    let mut place_tables = PlaceTables::default();
+    if let Some(text) = &waypoints_text {
+        place_tables.waypoints = Some((places::WAYPOINTS_VERSION, places::waypoints_from_device(text)?));
+    }
+    if let Some(text) = &track_blocks_text {
+        let newest = client.newest_track_point(&info, &imei, &who).map_err(|e| e.to_string())?;
+        place_tables.newest_track_point = Some(newest);
+        place_tables.tracks_to_send = places::tracks_to_send(text, newest);
+        place_tables.track_blocks = Some((places::TRACK_BLOCKS_VERSION, text.clone()));
+    }
+    if let Some(text) = &routes_text {
+        place_tables.routes = Some((places::ROUTES_VERSION, places::routes_from_device(text)?));
+    }
 
     let modified = |kind: i32| {
         status
@@ -149,12 +217,23 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
         contacts_version,
         sync_data_version,
         settings_version,
-        tables: vec![(plan::CONTACTS, contacts_text), (plan::SYNC_DATA, sync_data_text), (SETTINGS, settings_text)],
+        tables: [
+            Some((plan::CONTACTS, contacts_text)),
+            Some((plan::SYNC_DATA, sync_data_text)),
+            Some((SETTINGS, settings_text)),
+            waypoints_text.map(|t| (places::WAYPOINTS, t)),
+            track_blocks_text.map(|t| (places::TRACK_BLOCKS, t)),
+            routes_text.map(|t| (places::ROUTES, t)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         info,
         who,
         last_synced: status.last_synced,
         firmware_update,
         plan,
+        places: place_tables,
     })
 }
 
@@ -168,6 +247,7 @@ pub fn preview(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) 
         sync_url: g.info.sync_url,
         last_synced: g.last_synced,
         firmware_update: g.firmware_update,
+        places: g.places.summary(),
         plan: g.plan,
     })
 }
@@ -223,6 +303,11 @@ pub struct Applied {
     pub backup: PathBuf,
     /// The plan of a second look after the writes, before the restart: what still differs.
     pub left_over: Plan,
+    pub places_after: Places,
+    /// What Garmin sent back: its waypoints and routes, the track blocks it took.
+    pub waypoints_from_garmin: Option<usize>,
+    pub routes_from_garmin: Option<usize>,
+    pub tracks_taken: Option<i64>,
     /// The mode the device came back in after its restart (`None`: not seen).
     pub mode_after_restart: Option<AppMode>,
 }
@@ -312,6 +397,47 @@ pub fn apply(
         dev.batch_write(settings, sv, &p.settings.lines, max).map_err(e)?;
         client.mark_synced(&g.info, "Settings", &g.imei, &g.who).map_err(s)?;
     }
+    // Waypoints both ways (SyncWaypoints): Garmin's merged list replaces the device's.
+    let mut waypoints_from_garmin = None;
+    if let Some((version, mine)) = &g.places.waypoints {
+        step("Syncing the waypoints");
+        let merged = client.update_waypoints(&g.info, &g.imei, mine, &g.who).map_err(s)?;
+        dev.write_table(places::WAYPOINTS, *version, "d,*\r\n").map_err(e)?;
+        dev.batch_write(places::WAYPOINTS, *version, &places::waypoint_lines(&merged), max).map_err(e)?;
+        waypoints_from_garmin = Some(merged.len());
+    }
+    // Tracks to Garmin only (SyncTracks).
+    let mut tracks_taken = None;
+    if let Some((version, _)) = &g.places.track_blocks {
+        step("Sending the tracks");
+        if !g.places.tracks_to_send.is_empty() {
+            tracks_taken = Some(client.insert_tracks(&g.info, &g.imei, *version, &g.places.tracks_to_send, &g.who).map_err(s)?);
+        }
+    }
+    // Routes both ways (SyncRoutes): the device's go, Garmin's replace them with their tracks.
+    let mut routes_from_garmin = None;
+    if let (Some((version, mine)), Some((tb_version, tb_text))) = (&g.places.routes, &g.places.track_blocks) {
+        step("Syncing the routes");
+        let merged = client.update_routes(&g.info, &g.imei, *tb_version, mine, &g.who).map_err(s)?;
+        if !mine.is_empty() {
+            dev.write_table(places::ROUTES, *version, "d,*\r\n").map_err(e)?;
+        }
+        if !tb_text.trim().is_empty() {
+            for route in mine {
+                dev.batch_write(places::TRACK_BLOCKS, *tb_version, &[format!("d,{}", route.track_id)], max).map_err(e)?;
+            }
+        }
+        let mut route_rows = Vec::new();
+        for route in &merged {
+            if let Some((line, blocks)) = places::route_lines(route) {
+                route_rows.push(line);
+                dev.batch_write(places::TRACK_BLOCKS, *tb_version, &blocks, max).map_err(e)?;
+            }
+        }
+        dev.batch_write(places::ROUTES, *version, &route_rows, max).map_err(e)?;
+        routes_from_garmin = Some(merged.len());
+    }
+
     if let Some(t) = time(plan::SYNC_TIME) {
         step("Writing the time of the sync");
         dev.batch_write(settings, sv, &t, max).map_err(e)?;
@@ -327,7 +453,15 @@ pub fn apply(
     step("Restarting the inReach");
     InReach::open(&g.found).and_then(|mut d| d.restart_app_mode()).map_err(e)?;
     let mode_after_restart = wait_after_restart(sysfs);
-    Ok(Applied { backup: backup_dir, left_over: after.plan, mode_after_restart })
+    Ok(Applied {
+        backup: backup_dir,
+        left_over: after.plan,
+        places_after: after.places.summary(),
+        waypoints_from_garmin,
+        routes_from_garmin,
+        tracks_taken,
+        mode_after_restart,
+    })
 }
 
 /// The default places: /sys, ~/.config/nimrag-sync, the desktop keyring, Garmin.

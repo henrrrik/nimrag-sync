@@ -51,6 +51,16 @@ ColumnLayout {
             out[0].text += " · " + qsTr("%1 made on the device kept").arg(plan.device_contacts_kept)
         if (plan.addresses_kept.length > 0)
             out[1].text += " · " + qsTr("%1 the device keeps").arg(plan.addresses_kept.length)
+        var places = section.preview.places
+        if (places) {
+            out.push({ title: qsTr("Waypoints"), text: places.waypoints === null ? qsTr("not synced")
+                     : qsTr("the device's %1 go to Garmin, which sends back its merged list").arg(places.waypoints), changed: false })
+            out.push({ title: qsTr("Routes"), text: places.routes === null ? qsTr("not synced")
+                     : qsTr("the device's %1 go to Garmin, which sends back its routes").arg(places.routes), changed: false })
+            out.push({ title: qsTr("Tracks"), text: places.tracks_to_send === null ? qsTr("not synced")
+                     : (places.tracks_to_send > 0 ? qsTr("%1 track blocks to send").arg(places.tracks_to_send) : qsTr("nothing new to send")),
+                       changed: places.tracks_to_send > 0 })
+        }
         var s = plan.settings
         if (s.answered)
             out.push({ title: qsTr("Settings"), text: s.changed.length ? qsTr("%1 to change, %2 unchanged").arg(s.changed.length).arg(s.unchanged)

@@ -331,6 +331,7 @@ fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         );
     }
     show_plan(out, &p.plan);
+    show_places(out, &p.places);
     let _ = writeln!(
         out,
         "{}",
@@ -389,6 +390,34 @@ fn show_plan(out: &mut dyn Write, plan: &crate::plan::Plan) {
     }
 }
 
+fn show_places(out: &mut dyn Write, p: &crate::sync::Places) {
+    match p.waypoints {
+        Some(n) => {
+            let _ = writeln!(out, "Waypoints: the device's {n} go to Garmin; Garmin's merged list replaces them on the device");
+        }
+        None => {
+            let _ = writeln!(out, "Waypoints: not synced (the device's table is not a version inReach Sync syncs)");
+        }
+    }
+    match p.routes {
+        Some(n) => {
+            let _ = writeln!(out, "Routes: the device's {n} go to Garmin; Garmin's routes, with their tracks, replace them");
+        }
+        None => {
+            let _ = writeln!(out, "Routes: not synced");
+        }
+    }
+    match p.tracks_to_send {
+        Some(n) => {
+            let since = p.newest_track_point.as_deref().unwrap_or("the start");
+            let _ = writeln!(out, "Tracks: {n} high-detail blocks go to Garmin (Garmin has points up to {since})");
+        }
+        None => {
+            let _ = writeln!(out, "Tracks: not synced");
+        }
+    }
+}
+
 fn sync(apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     if !apply {
         return preview(json, out, err);
@@ -412,6 +441,15 @@ fn sync(apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i3
                     Some(m) => writeln!(out, "The inReach restarted in {} mode.", mode_name(&m)),
                     None => writeln!(out, "The inReach restarted; it has not answered since."),
                 };
+                if let Some(n) = applied.waypoints_from_garmin {
+                    let _ = writeln!(out, "Waypoints: Garmin sent {n}, now on the device.");
+                }
+                if let Some(n) = applied.routes_from_garmin {
+                    let _ = writeln!(out, "Routes: Garmin sent {n}.");
+                }
+                if let Some(n) = applied.tracks_taken {
+                    let _ = writeln!(out, "Tracks: Garmin took {n} blocks.");
+                }
                 if applied.left_over.is_change() {
                     let _ = writeln!(out, "Read back before the restart, the inReach still differs from Garmin:");
                     show_plan(out, &applied.left_over);
