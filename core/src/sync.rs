@@ -198,30 +198,33 @@ fn backup(dir: &Path, imei: &str, tables: &[(u8, String)]) -> Result<PathBuf, St
     Ok(folder)
 }
 
-/// Waits for the device to come back in app mode after a restart.
-fn wait_for_app(sysfs: &Path, node_before: &Path, timeout: Duration) -> Result<(), String> {
+/// Waits for the device after its restart as inReach Sync does
+/// (DeviceManager.waitForFinishReboot): up to 7 s for it to come back on USB,
+/// then 5 s more. Returns the mode it came back in, if it answers. An
+/// inReach Mini restarted from app mode while plugged in comes back as a USB
+/// drive.
+fn wait_after_restart(sysfs: &Path) -> Option<AppMode> {
     let start = Instant::now();
-    // It leaves the bus first; give it a moment before asking.
-    std::thread::sleep(Duration::from_secs(3));
-    while start.elapsed() < timeout {
-        if let Some(found) = device::find(sysfs).into_iter().next()
-            && let Ok(mut dev) = InReach::open(&found)
-            && dev.app_mode().ok() == Some(AppMode::App)
-        {
-            log::info!("back in app mode at {} (was {})", found.node.display(), node_before.display());
-            return Ok(());
+    std::thread::sleep(Duration::from_secs(2));
+    while start.elapsed() < Duration::from_secs(7) {
+        if !device::find(sysfs).is_empty() {
+            break;
         }
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(500));
     }
-    Err("The inReach did not come back after its restart. Unplug it and plug it in again.".into())
+    std::thread::sleep(Duration::from_secs(5));
+    let found = device::find(sysfs).into_iter().next()?;
+    InReach::open(&found).ok()?.app_mode().ok()
 }
 
 /// What `apply` did.
 #[derive(Debug, Serialize)]
 pub struct Applied {
     pub backup: PathBuf,
-    /// The plan of a second look after the sync: what still differs.
+    /// The plan of a second look after the writes, before the restart: what still differs.
     pub left_over: Plan,
+    /// The mode the device came back in after its restart (`None`: not seen).
+    pub mode_after_restart: Option<AppMode>,
 }
 
 /// Syncs the first connected inReach as inReach Sync does, telling `step`
@@ -314,14 +317,17 @@ pub fn apply(
         dev.batch_write(settings, sv, &t, max).map_err(e)?;
     }
 
-    step("Restarting the inReach");
-    dev.restart_app_mode().map_err(e)?;
     drop(dev);
-    wait_for_app(sysfs, &g.found.node, Duration::from_secs(90))?;
 
+    // Not a step of inReach Sync's: a second look while the device is still
+    // in app mode, which it may not be after the restart.
     step("Reading the inReach back");
     let after = gather(sysfs, config, keyring, client)?;
-    Ok(Applied { backup: backup_dir, left_over: after.plan })
+
+    step("Restarting the inReach");
+    InReach::open(&g.found).and_then(|mut d| d.restart_app_mode()).map_err(e)?;
+    let mode_after_restart = wait_after_restart(sysfs);
+    Ok(Applied { backup: backup_dir, left_over: after.plan, mode_after_restart })
 }
 
 /// The default places: /sys, ~/.config/nimrag-sync, the desktop keyring, Garmin.

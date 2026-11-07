@@ -403,11 +403,17 @@ fn sync(apply: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i3
                 let _ = writeln!(out, "{:#}", serde_json::json!({ "steps": steps, "backup": applied.backup, "left_over": applied.left_over }));
             } else {
                 let _ = writeln!(out, "Synced. The tables as they were are kept in {}", applied.backup.display());
+                let _ = match applied.mode_after_restart {
+                    Some(device::AppMode::MassStorage) => writeln!(out, "The inReach restarted as a USB drive."),
+                    Some(device::AppMode::App) => writeln!(out, "The inReach restarted and is on."),
+                    Some(m) => writeln!(out, "The inReach restarted in {} mode.", mode_name(&m)),
+                    None => writeln!(out, "The inReach restarted; it has not answered since."),
+                };
                 if applied.left_over.is_change() {
-                    let _ = writeln!(out, "Read back, the inReach still differs from Garmin:");
+                    let _ = writeln!(out, "Read back before the restart, the inReach still differs from Garmin:");
                     show_plan(out, &applied.left_over);
                 } else {
-                    let _ = writeln!(out, "Read back, the inReach matches Garmin.");
+                    let _ = writeln!(out, "Read back before the restart, the inReach matches Garmin.");
                 }
             }
             if applied.left_over.is_change() { 1 } else { 0 }

@@ -398,6 +398,14 @@ mod tests {
                     }
                     head.push_str(&line);
                 }
+                // Read the body too: answering before it would reset the connection
+                // under a client still sending it.
+                let length = head
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                    .unwrap_or(0);
+                let mut body = vec![0u8; length];
+                let _ = std::io::Read::read_exact(&mut reader, &mut body);
                 let request_line = head.lines().next().unwrap_or("").to_string();
                 log.lock().unwrap().push(head);
                 let (status, body, location) = route(&request_line);

@@ -58,3 +58,23 @@ quoted, numbers are not, empty fields are `""` or nothing. UTF-8 (Swedish letter
   not known yet (version 3 is newer than inReach Sync's definition).
 - **Waypoints (14, v3)**: `ID,SyncState,Hidden,Symbol,Lat,Lon,Created,Updated,Name`, as the spec says.
 - **Routes (16)**: empty on this device.
+
+## The first sync (nimrag-sync, as inReach Sync does it), 2026-11-07
+
+`nimrag-sync sync --apply` on the same Mini: every `WRITE_TABLE` was answered without data (taken), and
+Garmin took the firmware report and the three acknowledgements (its "last synced" moved to the time of
+the sync).
+
+- **Inserts replace.** A SyncData insert (`i,<type>,<short code>,"<value>"`) for a type and short code the
+  table already has replaced that row and kept its ID (`(type << 16) | short code`): the presets and the
+  breadcrumb changed in place.
+- **`d,*` on SyncData removed nothing.** The device answered it as taken, yet every row it held before
+  was still there after the sync, with the same ID, including 8 addresses no Explore contact has. Either
+  this firmware (3.90) ignores `d,*` on SyncData, or it keeps or rebuilds those rows. inReach Sync sends the
+  same `d,*\r\n` (SyncDevice.DeleteAllFromTable), so it would leave them too. Not known yet which.
+- **The breadcrumb** read `breadcrumb` before (written by something else, likely the phone app) and `sbc`
+  after.
+- **Settings** 448 and 760, which Garmin sent and the device did not have, were added.
+- **After the restart** (`RESET_DEVICE_REQ` from app mode, cable plugged in) the Mini came back as a **USB
+  drive**, not in app mode. From charger mode the same message brings it up in app mode. inReach Sync only
+  waits for the device to come back (7 s, then 5 s) and does not mind the mode.
