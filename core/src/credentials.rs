@@ -27,21 +27,26 @@ pub enum Error {
 /// The password store: the keyring through `secret-tool` (tests use a stand-in).
 pub struct Keyring {
     secret_tool: PathBuf,
+    /// Arguments before secret-tool's own: the tests run their stand-in as
+    /// `/bin/sh <script>`, since executing a file just written can fail with
+    /// "Text file busy" while another thread forks.
+    prefix: Vec<PathBuf>,
 }
 
 impl Default for Keyring {
     fn default() -> Self {
-        Keyring { secret_tool: PathBuf::from("secret-tool") }
+        Keyring { secret_tool: PathBuf::from("secret-tool"), prefix: Vec::new() }
     }
 }
 
 impl Keyring {
     pub fn with_tool(path: &Path) -> Keyring {
-        Keyring { secret_tool: path.to_path_buf() }
+        Keyring { secret_tool: path.to_path_buf(), prefix: Vec::new() }
     }
 
     fn run(&self, args: &[&str], input: Option<&str>) -> Result<(bool, String), Error> {
         let mut child = Command::new(&self.secret_tool)
+            .args(&self.prefix)
             .args(args)
             .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -137,7 +142,6 @@ pub fn load(dir: &Path, keyring: &Keyring, host: &str) -> Result<Credentials, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     /// A secret-tool stand-in keeping secrets as files in `dir/secrets`.
     fn fake_tool(dir: &Path) -> Keyring {
@@ -161,8 +165,7 @@ esac
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Keyring::with_tool(&script)
+        Keyring { secret_tool: PathBuf::from("/bin/sh"), prefix: vec![script] }
     }
 
     #[test]
