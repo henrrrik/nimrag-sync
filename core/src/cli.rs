@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::{device, status};
+use crate::{device, server, status};
 
 const USAGE: &str = "\
 Usage: nimrag-sync [open]                  open the window
@@ -16,6 +16,8 @@ Usage: nimrag-sync [open]                  open the window
                                              restart an inReach in its normal mode (a trial run without --apply)
        nimrag-sync tables [--json]           the tables the inReach has, and their versions (read only)
        nimrag-sync read-table <id> [--json]  the rows of one table as the inReach sends them (read only)
+       nimrag-sync server [<imei>] [--json]  what Garmin's inReach service holds for the device (read only;
+                                             the IMEI comes from the device, in app mode, when not given)
        nimrag-sync help                      this text
 ";
 
@@ -46,6 +48,7 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
                 1
             }
         },
+        "server" => server(sysfs, operands.first().copied(), json, out, err),
         "help" | "--help" | "-h" => {
             let _ = write!(out, "{USAGE}");
             0
@@ -215,6 +218,86 @@ fn read_table(sysfs: &Path, id: u8, json: bool, out: &mut dyn Write, err: &mut d
         }
         Ok(text) => {
             let _ = write!(out, "{}", text.replace("\r\n", "\n"));
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
+    }
+}
+
+/// Until the credentials live in the keyring: a netrc file, $NIMRAG_NETRC or
+/// ~/.config/nimrag-sync/test.netrc.
+fn credentials_for(host: &str) -> Result<server::Credentials, String> {
+    let path = std::env::var_os("NIMRAG_NETRC").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        Path::new(&home).join(".config/nimrag-sync/test.netrc")
+    });
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    server::netrc_credentials(&text, host)
+        .ok_or_else(|| format!("{} has no login and password for {host}", path.display()))
+}
+
+fn server(sysfs: &Path, imei: Option<&str>, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let imei = match imei {
+        Some(i) => i.to_string(),
+        None => {
+            let Some(mut dev) = open_first(sysfs, err) else { return 1 };
+            match dev.imei() {
+                Ok(Some(i)) => i,
+                Ok(None) => {
+                    let _ = writeln!(err, "The inReach did not tell its IMEI.");
+                    return 1;
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "{e} (the IMEI is read in app mode: nimrag-sync app-mode --apply)");
+                    return 1;
+                }
+            }
+        }
+    };
+    let client = server::Client::default();
+    let result = (|| -> Result<serde_json::Value, String> {
+        let info = client.sync_info(&imei).map_err(|e| e.to_string())?;
+        let host = info.sync_url.trim_start_matches("https://").trim_start_matches("http://");
+        let host = host.split('/').next().unwrap_or(host).to_string();
+        let who = credentials_for(&host)?;
+        let status = client.device_sync(&info, &imei, &who).map_err(|e| e.to_string())?;
+        let count = |n: Option<usize>| n.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
+        let contacts = client.contacts(&info, &imei, &who).map_err(|e| e.to_string())?;
+        let presets = client.presets(&info, &imei, &who).map_err(|e| e.to_string())?;
+        let quick_texts = client.quick_texts(&info, &imei, &who).map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "sync_url": info.sync_url,
+            "provisioned": info.provisioned,
+            "synced": status.synced,
+            "last_synced": status.last_synced,
+            "changed": status.sync_data,
+            "contacts": count(contacts.as_ref().map(Vec::len)),
+            "presets": count(presets.as_ref().map(Vec::len)),
+            "quick_texts": count(quick_texts.as_ref().map(Vec::len)),
+        }))
+    })();
+    match result {
+        Ok(v) if json => {
+            let _ = writeln!(out, "{v:#}");
+            0
+        }
+        Ok(v) => {
+            let names = ["contacts", "quick texts", "presets", "waypoints", "routes", "device commands"];
+            let _ = writeln!(out, "Sync server:  {}", v["sync_url"].as_str().unwrap_or(""));
+            let _ = writeln!(out, "Last synced:  {}", v["last_synced"].as_str().unwrap_or("never"));
+            let _ = writeln!(out, "Up to date:   {}", if v["synced"].as_bool() == Some(true) { "yes" } else { "no" });
+            for key in ["contacts", "presets", "quick_texts"] {
+                let n = v[key].as_u64().map(|n| n.to_string()).unwrap_or_else(|| "none sent".into());
+                let _ = writeln!(out, "{:<13} {n}", format!("{}:", key.replace('_', " ")));
+            }
+            for h in v["changed"].as_array().into_iter().flatten() {
+                let name = names.get(h["DataType"].as_u64().unwrap_or(99) as usize).unwrap_or(&"other");
+                let when = h["LastModified"].as_str().unwrap_or("never");
+                let _ = writeln!(out, "  {name} changed: {when}");
+            }
             0
         }
         Err(e) => {

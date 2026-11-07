@@ -50,6 +50,7 @@ agents. Each command takes `--json`, exits 0 or 1, and writes errors to stderr.
 | `nimrag-sync app-mode [--apply] [--json]` | restart an inReach in its normal mode (it switches on); a trial run without `--apply` |
 | `nimrag-sync tables [--json]` | the tables the inReach has and their versions (read only; needs app mode) |
 | `nimrag-sync read-table <id> [--json]` | the rows of one table as the inReach sends them (read only; needs app mode) |
+| `nimrag-sync server [<imei>] [--json]` | what Garmin's inReach service holds for the device: sync server, last sync, contacts, presets and quick texts (read only) |
 
 ## Building
 

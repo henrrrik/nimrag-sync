@@ -46,3 +46,9 @@ quick texts as SyncData has type-2 rows.
   last written by something else, most likely Garmin's phone app. **Inferred:** `ms` is how the device is
   told to post the preset to MapShare; a writer should append it when `MapShare` is true. What Facebook and
   Twitter would add is not known (both are false here, and those services are long gone from inReach).
+
+## High-water marks for waypoints and routes move by themselves
+
+Two `GET /V1/Sync/Device` five minutes apart, with nothing changed in between, gave the same marks for
+contacts, quick texts and presets, but **new times for waypoints (3) and routes (4)**, close to the time of
+the request. Those two marks cannot tell whether anything changed; the others can.

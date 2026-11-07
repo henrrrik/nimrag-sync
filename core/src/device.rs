@@ -292,6 +292,19 @@ impl<T: Transport> InReach<T> {
         }
     }
 
+    /// The device's IMEI: setting 9 in the Settings table (the serial in the
+    /// VERSION reply is zeros on an inReach Mini). Needs app mode.
+    pub fn imei(&mut self) -> Result<Option<String>, Error> {
+        const SETTINGS: u8 = 7;
+        let Some(version) = self.table_version(SETTINGS)? else { return Ok(None) };
+        let text = self.read_table(SETTINGS, version)?;
+        Ok(crate::csv::parse(&text)
+            .into_iter()
+            .find(|row| row.first().map(String::as_str) == Some("9"))
+            .and_then(|row| row.get(1).cloned())
+            .filter(|imei| imei.len() == 15 && imei.bytes().all(|b| b.is_ascii_digit())))
+    }
+
     /// The device restarts in its normal (app) mode, as inReach Sync has it do
     /// before a sync; no answer comes, it leaves the bus.
     pub fn restart_app_mode(&mut self) -> Result<(), Error> {
@@ -408,6 +421,15 @@ pub(crate) mod tests {
         fake.streams.push((READ_TABLE, vec![b"1,1,Ada".to_vec()]));
         let mut dev = InReach::new(fake);
         assert!(matches!(dev.read_table(1, 5), Err(Error::NoAnswer)));
+    }
+
+    #[test]
+    fn imei_is_setting_9() {
+        let mut fake = Fake::default();
+        fake.answers.push((TABLE_VERSION, vec![1]));
+        fake.streams.push((READ_TABLE, vec![b"8,20041,\r\n9,300434000000001,\r\n11,89AB\r\n".to_vec(), vec![]]));
+        let mut dev = InReach::new(fake);
+        assert_eq!(dev.imei().unwrap().as_deref(), Some("300434000000001"));
     }
 
     #[test]
