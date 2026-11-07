@@ -128,3 +128,19 @@ missing; 1240, 520, 232 and 248 had other values) and the Configuration row in t
 device had had `0` last). The deletes named rows the device did not have; settings 24 and 48 were already
 the same. What 1232, 1240, 520, 232 and 248 control is not known. The acknowledgement (`POST
 /V1/Sync/Plans?imei=…`, the list with `StatusCode` 1) was taken.
+
+## A software update as a USB drive, 2026-11-07
+
+`nimrag-sync update --apply --reinstall` on the same Mini (3.90): Garmin's update server offered 3.90
+itself (5 846 344 bytes); the download's size and MD5 matched, `Garmin/GUPDATE.GCD` was written to the
+drive, and the drive ejected.
+
+- **Ejected as the file manager does** (unmount, then UDisks's `Drive.Eject`): the Mini left USB at once,
+  came back for a moment with its HID interface only (about 9 s; its screen showed an update screen for a
+  moment), left again, and came back as a USB drive
+  at about 13 s, **without `GUPDATE.GCD`**: it had installed it and deleted the file, as Garmin devices do.
+  Its software read 3.90 after, and the update server offered nothing new.
+- **`udisksctl power-off` is not a way to eject it:** the kernel then drops the USB device, which stays away
+  until it is plugged in again; the Mini kept showing its USB symbol (it still took itself for a drive).
+- Ejecting a drive without an update file (`nimrag-sync eject`) brings the Mini back within a second, HID only,
+  in charger mode.

@@ -25,7 +25,7 @@ Packages for Arch Linux and Omarchy, x86_64 and aarch64, are on the
 from its address:
 
 ```sh
-sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.1.0/nimrag-sync-0.1.0-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
 ```
 
 (`aarch64` in place of `x86_64` on ARM, such as an Asahi Mac.) The package brings the udev rule
@@ -83,6 +83,7 @@ agents. Each command takes `--json`, exits 0 or 1, and writes errors to stderr.
 | `nimrag-sync tables [--json]` | the tables the inReach has and their versions (read only; needs app mode) |
 | `nimrag-sync read-table <id> [--json]` | the rows of one table as the inReach sends them (read only; needs app mode) |
 | `nimrag-sync update [--apply] [--reinstall] [--json]` | software updates for an inReach in USB drive mode: asks Garmin's update server with the drive's `GarminDevice.xml`; `--apply` downloads, checks (size, MD5), copies the file to the drive and ejects it, and the inReach installs it when it restarts; `--reinstall` offers its own version too |
+| `nimrag-sync eject` | eject an inReach's USB drive as the file manager does (it then charges, or installs an update) |
 | `nimrag-sync login <email>`, `logout` | sign in (the password, typed or piped to stdin, goes to the keyring) and out |
 | `nimrag-sync preview [--json]` | what a sync would change on the inReach (reads only; the inReach must be on) |
 | `nimrag-sync sync [--apply] [--json]` | sync as inReach Sync does; a trial run, the preview, without `--apply` |

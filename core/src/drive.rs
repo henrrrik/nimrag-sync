@@ -88,9 +88,11 @@ pub fn find_here() -> Vec<Drive> {
 }
 
 fn udisksctl(args: &[&str]) -> Result<String, String> {
+    // Only the commands that act take --no-user-interaction; `info` refuses it.
+    let acts = matches!(args.first(), Some(&"mount" | &"unmount" | &"power-off"));
     let out = Command::new("udisksctl")
         .args(args)
-        .arg("--no-user-interaction")
+        .args(acts.then_some("--no-user-interaction"))
         .output()
         .map_err(|e| format!("udisksctl: {e} (is udisks2 installed?)"))?;
     if out.status.success() {
@@ -111,14 +113,36 @@ pub fn mount(drive: &Drive) -> Result<PathBuf, String> {
     mount_point(&mounts, &drive.device).ok_or_else(|| format!("{device} was mounted, but not found mounted"))
 }
 
-/// Ejects the drive as the file manager does: unmounted, then powered off,
-/// which an inReach takes as the end of its drive mode.
+/// The UDisks object of the drive a block device is on, from `udisksctl info`
+/// ("Drive: '/org/freedesktop/UDisks2/drives/…'").
+pub fn udisks_drive(info: &str) -> Option<String> {
+    info.lines().find_map(|l| {
+        let v = l.trim().strip_prefix("Drive:")?.trim().trim_matches('\'');
+        (v.starts_with("/org/freedesktop/UDisks2/drives/")).then(|| v.to_string())
+    })
+}
+
+/// Ejects the drive as the file manager does: unmounted, then UDisks's
+/// Drive.Eject. An inReach takes that as the end of its drive mode and comes
+/// back on USB by itself. (Not `power-off`: that has the kernel drop the USB
+/// device, which then stays away until it is plugged in again.)
 pub fn eject(drive: &Drive) -> Result<(), String> {
     let device = drive.device.to_string_lossy();
-    if drive.mount.is_some() || mount_point(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default(), &drive.device).is_some() {
+    if mount_point(&std::fs::read_to_string("/proc/self/mounts").unwrap_or_default(), &drive.device).is_some() {
         udisksctl(&["unmount", "-b", &device])?;
     }
-    udisksctl(&["power-off", "-b", &device]).map(|_| ())
+    let info = udisksctl(&["info", "-b", &device])?;
+    let object = udisks_drive(&info).ok_or_else(|| format!("udisks does not name the drive of {device}"))?;
+    let out = Command::new("gdbus")
+        .args(["call", "--system", "--dest", "org.freedesktop.UDisks2", "--object-path", &object])
+        .args(["--method", "org.freedesktop.UDisks2.Drive.Eject", "{'auth.no_user_interaction': <true>}"])
+        .output()
+        .map_err(|e| format!("gdbus: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("ejecting {device}: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
 }
 
 /// The drive's `Garmin/GarminDevice.xml`, its folder in any letter case.
@@ -178,6 +202,13 @@ mod tests {
         assert_eq!(drives[0].mount.as_deref(), Some(Path::new("/run/media/ada/GARMIN X")));
         assert_eq!(find(&class, "")[0].mount, None);
         assert!(find(&dir.path().join("missing"), "").is_empty());
+    }
+
+    #[test]
+    fn the_udisks_drive_of_a_block_device() {
+        let info = "/org/freedesktop/UDisks2/block_devices/sda:\n  org.freedesktop.UDisks2.Block:\n    Device:                     /dev/sda\n    Drive:                      '/org/freedesktop/UDisks2/drives/Garmin_inReach_0000001234567890'\n";
+        assert_eq!(udisks_drive(info).as_deref(), Some("/org/freedesktop/UDisks2/drives/Garmin_inReach_0000001234567890"));
+        assert_eq!(udisks_drive("    Drive:                      '/'\n"), None);
     }
 
     #[test]

@@ -25,6 +25,7 @@ Usage: nimrag-sync [open]                  open the window
        nimrag-sync update [--apply] [--reinstall] [--json]
                                              software updates for an inReach in USB drive mode (a trial run
                                              without --apply; --reinstall offers its own version too)
+       nimrag-sync eject                     eject an inReach's USB drive, as the file manager does
        nimrag-sync login <email>             sign in to the Garmin account; the password (typed, or piped
                                              to stdin) goes to the keyring
        nimrag-sync logout                    sign out; the password leaves the keyring
@@ -61,6 +62,22 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
         },
         "server" => server(sysfs, operands.first().copied(), json, out, err),
         "update" => update(apply, flags.contains(&"--reinstall"), json, out, err),
+        "eject" => match crate::drive::find_here().into_iter().next() {
+            Some(d) => match crate::drive::eject(&d) {
+                Ok(()) => {
+                    let _ = writeln!(out, "Ejected {}.", d.device.display());
+                    0
+                }
+                Err(e) => {
+                    let _ = writeln!(err, "{e}");
+                    1
+                }
+            },
+            None => {
+                let _ = writeln!(err, "No inReach is a USB drive now.");
+                1
+            }
+        },
         "login" => login(operands.first().copied(), out, err),
         "preview" => preview(json, out, err),
         "sync" => sync(apply, json, out, err),

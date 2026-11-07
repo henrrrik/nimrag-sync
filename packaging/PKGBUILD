@@ -1,7 +1,7 @@
 # Builds nimrag-sync from a release's source tarball (for the AUR, or to build
 # it yourself). pkgbuild/PKGBUILD builds the working tree instead (bin/install).
 pkgname=nimrag-sync
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Keep an inReach in sync on Linux: software, contacts, messages and settings'
 arch=('x86_64' 'aarch64')
@@ -13,7 +13,7 @@ makedepends=('gcc' 'make' 'cargo')
 # the final link, which is not LTO, cannot use.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('ee1fe10983354a3b5e62f5621e661498d26ba6ca12899ee46abb7ccf3ad8bcc3')
+sha256sums=('SKIP')
 
 prepare() {
   cd "$pkgname-$pkgver"
