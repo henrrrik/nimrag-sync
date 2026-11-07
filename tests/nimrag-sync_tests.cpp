@@ -1,4 +1,8 @@
 #include <QDir>
+#include <QDirIterator>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -30,6 +34,44 @@ private slots:
         QCOMPARE(Backend::nodesOf(R"([{"node":"/dev/hidraw5"},{"node":"/dev/hidraw4"}])"),
                  QStringList({"/dev/hidraw4", "/dev/hidraw5"}));
         QVERIFY(Backend::nodesOf("[]").isEmpty());
+    }
+
+    // Every text the window shows has a Swedish translation, with the same placeholders.
+    void swedishCoversEveryText()
+    {
+        QFile catalog(QStringLiteral(SOURCE_DIR) + "/i18n/sv.json");
+        QVERIFY(catalog.open(QIODevice::ReadOnly));
+        const QJsonObject sv = QJsonDocument::fromJson(catalog.readAll()).object();
+        QVERIFY(!sv.isEmpty());
+        // Ordinary string literals: moc does not get through a raw string with quotes in it.
+        const QRegularExpression call(QStringLiteral("\\b(?:qsTr|tr)\\(\"((?:[^\"\\\\]|\\\\.)*)\""));
+        const QRegularExpression placeholder(QStringLiteral("%\\d"));
+        QStringList missing, mismatched;
+        QDirIterator files(QStringLiteral(SOURCE_DIR), {"*.qml", "*.cpp"});
+        while (files.hasNext()) {
+            QFile file(files.next());
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            auto matches = call.globalMatch(QString::fromUtf8(file.readAll()));
+            while (matches.hasNext()) {
+                const QString text = matches.next().captured(1).replace("\\\"", "\"");
+                if (!sv.contains(text)) {
+                    missing << text;
+                    continue;
+                }
+                auto marks = [&](const QString &s) {
+                    QStringList found;
+                    auto it = placeholder.globalMatch(s);
+                    while (it.hasNext())
+                        found << it.next().captured(0);
+                    found.sort();
+                    return found;
+                };
+                if (marks(text) != marks(sv.value(text).toString()))
+                    mismatched << text;
+            }
+        }
+        QVERIFY2(missing.isEmpty(), qPrintable("not in sv.json: " + missing.join(" | ")));
+        QVERIFY2(mismatched.isEmpty(), qPrintable("placeholders differ: " + mismatched.join(" | ")));
     }
 
     void backendKnowsWhenADeviceIsOn()

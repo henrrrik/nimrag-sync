@@ -84,10 +84,8 @@ Dialog {
             flat: true
             DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
         }
-        Button {
-            Material.roundedScale: theme.radius
+        AccentButton {
             text: backend.task === "sign-in" ? qsTr("Signing in…") : qsTr("Sign in")
-            highlighted: true
             enabled: backend.task !== "sign-in" && email.text.trim().length > 0 && password.text.length > 0
             onClicked: dialog.submit()
         }

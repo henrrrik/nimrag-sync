@@ -71,11 +71,9 @@ Rectangle {
             Layout.topMargin: 4
             spacing: 12
 
-            Button {
+            AccentButton {
                 text: qsTr("Switch to USB drive mode")
                 enabled: !panel.busy
-                highlighted: true
-                Material.roundedScale: theme.radius
                 onClicked: panel.switchToDrive()
             }
             Label {

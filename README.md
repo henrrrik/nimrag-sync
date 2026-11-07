@@ -1,5 +1,7 @@
 # nimrag-sync
 
+![nimrag-sync showing what a sync of an inReach Mini would change](docs/screenshot.png)
+
 Keeps a Garmin/DeLorme inReach in sync on Linux: its software, contacts,
 preset messages and settings, as Garmin's inReach Sync does on Windows and
 macOS. An app for [Omarchy](https://omarchy.org).
@@ -15,6 +17,13 @@ USB drive way (see below).
 The window: plug the inReach in, sign in, switch it on if it is charging, and
 **Sync now**. The password is kept in the desktop's keyring (Secret Service,
 through `secret-tool`); the email address in `~/.config/nimrag-sync/account`.
+
+## Languages
+
+The window follows the language picked under Omarchy's Setup > Language, live: English and Swedish so
+far. A language is a catalog in `src/i18n/<code>.json` (English text to translation), listed in
+`src/resources.qrc`; `bin/test` fails when a catalog misses a text the window shows. Messages from the
+core (errors, the command line) are in English.
 
 ## Devices
 

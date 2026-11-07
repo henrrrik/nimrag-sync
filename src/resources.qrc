@@ -1,9 +1,11 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="AccentButton.qml">AccentButton.qml</file>
         <file alias="DevicePanel.qml">DevicePanel.qml</file>
         <file alias="SyncSection.qml">SyncSection.qml</file>
         <file alias="SignInDialog.qml">SignInDialog.qml</file>
         <file alias="i18n/en.json">i18n/en.json</file>
+        <file alias="i18n/sv.json">i18n/sv.json</file>
     </qresource>
 </RCC>

@@ -5,6 +5,9 @@ TEMPLATE = app
 
 INCLUDEPATH += ../src
 
+# The sources, so the catalogs can be checked against every qsTr() and tr().
+DEFINES += SOURCE_DIR=\\\"$$PWD/../src\\\"
+
 HEADERS += ../src/backend.h ../src/theme.h ../src/translator.h
 SOURCES += nimrag-sync_tests.cpp ../src/backend.cpp ../src/theme.cpp ../src/translator.cpp
 

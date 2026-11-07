@@ -2,6 +2,7 @@
 Type=Application
 Name=nimrag-sync
 Comment=Keep an inReach in sync: software, contacts, messages and settings
+Comment[sv]=Håll en inReach synkad: programvara, kontakter, meddelanden och inställningar
 Exec=nimrag-sync
 Icon=nimrag-sync
 Terminal=false

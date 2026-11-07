@@ -20,6 +20,28 @@ ColumnLayout {
 
     spacing: 8
 
+    // The core names its steps in English; each is translated here (an
+    // unknown one shows as it comes).
+    function stepText(step) {
+        var known = {
+            "Reading the inReach and Garmin's service": qsTr("Reading the inReach and Garmin's service"),
+            "Telling Garmin the inReach's software version": qsTr("Telling Garmin the inReach's software version"),
+            "Clearing the sync data": qsTr("Clearing the sync data"),
+            "Writing the contacts": qsTr("Writing the contacts"),
+            "Writing the preset messages": qsTr("Writing the preset messages"),
+            "Writing the quick texts": qsTr("Writing the quick texts"),
+            "Writing the settings": qsTr("Writing the settings"),
+            "Syncing the waypoints": qsTr("Syncing the waypoints"),
+            "Sending the tracks": qsTr("Sending the tracks"),
+            "Syncing the routes": qsTr("Syncing the routes"),
+            "Running Garmin's device commands": qsTr("Running Garmin's device commands"),
+            "Writing the time of the sync": qsTr("Writing the time of the sync"),
+            "Reading the inReach back": qsTr("Reading the inReach back"),
+            "Restarting the inReach": qsTr("Restarting the inReach")
+        }
+        return known[step] !== undefined ? known[step] : step
+    }
+
     function when(iso) {
         if (!iso)
             return qsTr("never")
@@ -102,10 +124,8 @@ ColumnLayout {
         visible: backend.account.length === 0
         Layout.fillWidth: true
         spacing: 12
-        Button {
-            Material.roundedScale: theme.radius
+        AccentButton {
             text: qsTr("Sign in…")
-            highlighted: true
             onClicked: section.requestSignIn()
         }
         Label {
@@ -144,7 +164,7 @@ ColumnLayout {
         spacing: 10
         BusyIndicator { running: visible; implicitWidth: 24; implicitHeight: 24 }
         Label {
-            text: section.syncing ? (backend.syncStep.length ? backend.syncStep + "…" : qsTr("Syncing…"))
+            text: section.syncing ? (backend.syncStep.length ? qsTr("%1…").arg(section.stepText(backend.syncStep)) : qsTr("Syncing…"))
                                   : qsTr("Asking the inReach and Garmin…")
         }
     }
@@ -191,6 +211,7 @@ ColumnLayout {
                     required property int index
                     Layout.row: index
                     Layout.column: 0
+                    Layout.alignment: Qt.AlignTop
                     text: modelData.title
                     opacity: 0.6
                 }
@@ -221,10 +242,8 @@ ColumnLayout {
         RowLayout {
             Layout.topMargin: 6
             spacing: 12
-            Button {
-                Material.roundedScale: theme.radius
+            AccentButton {
                 text: qsTr("Sync now")
-                highlighted: true
                 enabled: !backend.busy && !section.preview.firmware_update
                 onClicked: backend.sync()
             }
