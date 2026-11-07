@@ -52,3 +52,16 @@ quick texts as SyncData has type-2 rows.
 Two `GET /V1/Sync/Device` five minutes apart, with nothing changed in between, gave the same marks for
 contacts, quick texts and presets, but **new times for waypoints (3) and routes (4)**, close to the time of
 the request. Those two marks cannot tell whether anything changed; the others can.
+
+## What a sync as inReach Sync does would change on this Mini
+
+`nimrag-sync preview`, which replicates inReach Sync 1.4.47, on the Mini above:
+
+- Contacts, quick texts: unchanged; the contacts made on the device are kept.
+- Address book: the entries that are no Explore contact's address are removed, since clearing SyncData
+  removes them and only Explore contacts' addresses are written back. On this device that included phone
+  numbers used by its presets, its own contacts and its messages.
+- Presets: rewritten without the trailing `ms`, since inReach Sync writes Garmin's recipients as they come.
+  Whatever wrote `ms` there (most likely the phone app) would have to write it again for MapShare.
+- Settings 89 and 97 hold the quick texts' and presets' "last changed" times from Garmin, in Unix seconds,
+  and matched Garmin's to the second; 73 gets the time of the sync.

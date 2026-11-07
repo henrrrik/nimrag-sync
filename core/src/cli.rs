@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::{device, server, status};
+use crate::{credentials, device, server, status};
 
 const USAGE: &str = "\
 Usage: nimrag-sync [open]                  open the window
@@ -18,6 +18,11 @@ Usage: nimrag-sync [open]                  open the window
        nimrag-sync read-table <id> [--json]  the rows of one table as the inReach sends them (read only)
        nimrag-sync server [<imei>] [--json]  what Garmin's inReach service holds for the device (read only;
                                              the IMEI comes from the device, in app mode, when not given)
+       nimrag-sync preview [--json]          what a sync would change on the inReach: contacts, address
+                                             book, quick texts, preset messages (reads only; device on)
+       nimrag-sync login <email>             sign in to the Garmin account; the password (typed, or piped
+                                             to stdin) goes to the keyring
+       nimrag-sync logout                    sign out; the password leaves the keyring
        nimrag-sync help                      this text
 ";
 
@@ -49,6 +54,9 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
             }
         },
         "server" => server(sysfs, operands.first().copied(), json, out, err),
+        "login" => login(operands.first().copied(), out, err),
+        "preview" => preview(json, out, err),
+        "logout" => logout(out, err),
         "help" | "--help" | "-h" => {
             let _ = write!(out, "{USAGE}");
             0
@@ -227,16 +235,139 @@ fn read_table(sysfs: &Path, id: u8, json: bool, out: &mut dyn Write, err: &mut d
     }
 }
 
-/// Until the credentials live in the keyring: a netrc file, $NIMRAG_NETRC or
-/// ~/.config/nimrag-sync/test.netrc.
-fn credentials_for(host: &str) -> Result<server::Credentials, String> {
-    let path = std::env::var_os("NIMRAG_NETRC").map(std::path::PathBuf::from).unwrap_or_else(|| {
-        let home = std::env::var_os("HOME").unwrap_or_default();
-        Path::new(&home).join(".config/nimrag-sync/test.netrc")
+/// The password from stdin: typed without echo at a terminal, else read
+/// whole from a pipe (`--password-stdin` style), without its last newline.
+fn read_password(err: &mut dyn Write) -> std::io::Result<String> {
+    use std::io::{BufRead, Read};
+    let fd = libc::STDIN_FILENO;
+    // SAFETY: isatty only inspects the descriptor.
+    if unsafe { libc::isatty(fd) } == 1 {
+        let _ = write!(err, "Password: ");
+        let _ = err.flush();
+        // SAFETY: a zeroed termios is filled by tcgetattr before use.
+        let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+        let have = unsafe { libc::tcgetattr(fd, &mut saved) } == 0;
+        if have {
+            let mut quiet = saved;
+            quiet.c_lflag &= !libc::ECHO;
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &quiet) };
+        }
+        let mut line = String::new();
+        let read = std::io::stdin().lock().read_line(&mut line);
+        if have {
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+        }
+        let _ = writeln!(err);
+        read?;
+        return Ok(line.trim_end_matches(['\r', '\n']).to_string());
+    }
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text)?;
+    Ok(text.strip_suffix('\n').map(|t| t.strip_suffix('\r').unwrap_or(t)).unwrap_or(&text).to_string())
+}
+
+fn login(email: Option<&str>, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let Some(email) = email else {
+        let _ = writeln!(err, "nimrag-sync: login needs the Garmin account's email address");
+        return 1;
+    };
+    let password = match read_password(err) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return 1;
+        }
+    };
+    match credentials::sign_in(&credentials::config_dir(), &credentials::Keyring::default(), email, &password) {
+        Ok(()) => {
+            let _ = writeln!(out, "Signed in as {}; the password is in the keyring.", email.trim());
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
+    }
+}
+
+fn logout(out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    match credentials::sign_out(&credentials::config_dir(), &credentials::Keyring::default()) {
+        Ok(Some(email)) => {
+            let _ = writeln!(out, "Signed out {email}; its password left the keyring.");
+            0
+        }
+        Ok(None) => {
+            let _ = writeln!(out, "Not signed in.");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
+    }
+}
+
+fn preview(json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let p = match crate::sync::preview_here() {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return 1;
+        }
+    };
+    if json {
+        let _ = writeln!(out, "{:#}", serde_json::to_value(&p).unwrap_or_default());
+        return 0;
+    }
+    let _ = writeln!(out, "{} (software {}), last synced {}", p.device, p.firmware, p.last_synced.as_deref().unwrap_or("never"));
+    let plan = &p.plan;
+    let contact = |c: &crate::plan::ContactFields| {
+        let name = format!("{} {}", c.first_name, c.last_name).trim().to_string();
+        let reach: Vec<&str> = [&c.email, &c.phone, &c.inreach].into_iter().map(String::as_str).filter(|s| !s.is_empty()).collect();
+        format!("{name} <{}>", reach.join(", "))
+    };
+    section(out, "Contacts from Garmin", &plan.contacts, contact);
+    let _ = writeln!(out, "  {} made on the device, kept", plan.device_contacts_kept);
+    section(out, "Address book", &plan.addresses, |i| i.value.clone());
+    section(out, "Quick texts", &plan.quick_texts, |i| i.value.clone());
+    section(out, "Preset messages", &plan.presets, |i| {
+        let (to, message) = i.value.split_once('|').unwrap_or(("", &i.value));
+        format!("{message}  (to {to})")
     });
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    server::netrc_credentials(&text, host)
-        .ok_or_else(|| format!("{} has no login and password for {host}", path.display()))
+    if !plan.other_sync_data_removed.is_empty() {
+        let _ = writeln!(out, "Other sync data: {} rows cleared", plan.other_sync_data_removed.len());
+    }
+    for (id, value) in &plan.settings {
+        let what = match *id {
+            89 => "quick texts changed on Garmin at",
+            97 => "presets changed on Garmin at",
+            73 => "synced at",
+            _ => "value",
+        };
+        let _ = writeln!(out, "Setting {id} ({what}): {value}");
+    }
+    let _ = writeln!(out, "{}", if plan.is_change() { "A sync would make these changes." } else { "The inReach is up to date." });
+    0
+}
+
+fn section<T>(out: &mut dyn Write, title: &str, c: &crate::plan::Changes<T>, show: impl Fn(&T) -> String) {
+    if c.left_alone {
+        let _ = writeln!(out, "{title}: not touched ({} on the device)", c.unchanged.len());
+        return;
+    }
+    let _ = writeln!(out, "{title}: {} unchanged, {} to add, {} to remove", c.unchanged.len(), c.added.len(), c.removed.len());
+    for item in &c.added {
+        let _ = writeln!(out, "  + {}", show(item));
+    }
+    for item in &c.removed {
+        let _ = writeln!(out, "  - {}", show(item));
+    }
+}
+
+/// The sync server's host name, for the credentials.
+fn host_of(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    rest.split('/').next().unwrap_or(rest).to_string()
 }
 
 fn server(sysfs: &Path, imei: Option<&str>, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
@@ -260,11 +391,10 @@ fn server(sysfs: &Path, imei: Option<&str>, json: bool, out: &mut dyn Write, err
     let client = server::Client::default();
     let result = (|| -> Result<serde_json::Value, String> {
         let info = client.sync_info(&imei).map_err(|e| e.to_string())?;
-        let host = info.sync_url.trim_start_matches("https://").trim_start_matches("http://");
-        let host = host.split('/').next().unwrap_or(host).to_string();
-        let who = credentials_for(&host)?;
+        let who = credentials::load(&credentials::config_dir(), &credentials::Keyring::default(), &host_of(&info.sync_url))
+            .map_err(|e| e.to_string())?;
         let status = client.device_sync(&info, &imei, &who).map_err(|e| e.to_string())?;
-        let count = |n: Option<usize>| n.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
+        let count = |n: Option<Option<usize>>| n.flatten().map(serde_json::Value::from).unwrap_or(serde_json::Value::Null);
         let contacts = client.contacts(&info, &imei, &who).map_err(|e| e.to_string())?;
         let presets = client.presets(&info, &imei, &who).map_err(|e| e.to_string())?;
         let quick_texts = client.quick_texts(&info, &imei, &who).map_err(|e| e.to_string())?;
@@ -274,9 +404,9 @@ fn server(sysfs: &Path, imei: Option<&str>, json: bool, out: &mut dyn Write, err
             "synced": status.synced,
             "last_synced": status.last_synced,
             "changed": status.sync_data,
-            "contacts": count(contacts.as_ref().map(Vec::len)),
-            "presets": count(presets.as_ref().map(Vec::len)),
-            "quick_texts": count(quick_texts.as_ref().map(Vec::len)),
+            "contacts": count(contacts.as_ref().map(|c| c.as_ref().map(Vec::len))),
+            "presets": count(presets.as_ref().map(|c| c.as_ref().map(Vec::len))),
+            "quick_texts": count(quick_texts.as_ref().map(|c| c.as_ref().map(Vec::len))),
         }))
     })();
     match result {
@@ -350,6 +480,11 @@ mod tests {
         let (code, _, err) = run_args(dir.path(), &["read-table"]);
         assert_eq!(code, 1);
         assert!(err.contains("needs a table ID"));
+        assert_eq!(host_of("https://sync.explore.garmin.com"), "sync.explore.garmin.com");
+        assert_eq!(host_of("https://sync.example/x/"), "sync.example");
+        let (code, _, err) = run_args(dir.path(), &["login"]);
+        assert_eq!(code, 1);
+        assert!(err.contains("email address"));
         for command in ["tables", "app-mode"] {
             let (code, _, err) = run_args(dir.path(), &[command]);
             assert_eq!(code, 1);

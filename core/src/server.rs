@@ -168,19 +168,22 @@ impl Client {
         self.sync_get(sync, "Device", imei, who, "the sync status")
     }
 
-    pub fn contacts(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Vec<Contact>>, Error> {
-        let r: ContactsResponse = self.sync_get(sync, "Contacts", imei, who, "the contacts")?;
-        Ok(r.contacts)
+    // Each of these: `None` when Garmin answers `null` (inReach Sync then makes
+    // no step of it), `Some(None)` for an answer without its list.
+
+    pub fn contacts(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Option<Vec<Contact>>>, Error> {
+        let r: Option<ContactsResponse> = self.sync_get(sync, "Contacts", imei, who, "the contacts")?;
+        Ok(r.map(|r| r.contacts))
     }
 
-    pub fn presets(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Vec<Preset>>, Error> {
-        let r: PresetsResponse = self.sync_get(sync, "Presets", imei, who, "the preset messages")?;
-        Ok(r.presets)
+    pub fn presets(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Option<Vec<Preset>>>, Error> {
+        let r: Option<PresetsResponse> = self.sync_get(sync, "Presets", imei, who, "the preset messages")?;
+        Ok(r.map(|r| r.presets))
     }
 
-    pub fn quick_texts(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Vec<QuickText>>, Error> {
-        let r: QuickTextsResponse = self.sync_get(sync, "QuickTexts", imei, who, "the quick texts")?;
-        Ok(r.quick_texts)
+    pub fn quick_texts(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<Option<Option<Vec<QuickText>>>, Error> {
+        let r: Option<QuickTextsResponse> = self.sync_get(sync, "QuickTexts", imei, who, "the quick texts")?;
+        Ok(r.map(|r| r.quick_texts))
     }
 
     fn sync_get<T: DeserializeOwned>(
@@ -228,6 +231,30 @@ impl Client {
             .map_err(|e| Error::Network(e.to_string()))?;
         serde_json::from_str(&body).map_err(|e| Error::Unexpected { what: what.into(), detail: e.to_string() })
     }
+}
+
+/// Seconds since 1970 for an ISO 8601 time as Garmin writes it
+/// ("2020-09-17T15:11:23.0610421Z"), the fraction dropped as .NET's
+/// `(long)TotalSeconds` drops it. Only UTC ("Z", or no zone) is taken.
+pub fn unix_seconds(text: &str) -> Option<i64> {
+    let text = text.strip_suffix('Z').unwrap_or(text);
+    let (date, time) = text.split_once('T')?;
+    let mut d = date.split('-').map(|v| v.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let time = time.split('.').next()?;
+    let mut t = time.split(':').map(|v| v.parse::<i64>().ok());
+    let (h, min, sec) = (t.next()??, t.next()??, t.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || h > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+    // Days from 1970-01-01 to the date (Howard Hinnant's days_from_civil).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + min * 60 + sec)
 }
 
 fn basic(who: &Credentials) -> String {
@@ -351,13 +378,13 @@ mod tests {
         let client = Client::new("http://unused.invalid");
         let sync = SyncInfo { sync_url: format!("{base}/"), provisioned: true };
         let imei = "300434000000001";
-        let contacts = client.contacts(&sync, imei, &who()).unwrap().unwrap();
+        let contacts = client.contacts(&sync, imei, &who()).unwrap().unwrap().unwrap();
         assert_eq!(contacts[0].addresses[0].address, "ada@example.com");
         assert_eq!(contacts[0].organization, None);
-        let presets = client.presets(&sync, imei, &who()).unwrap().unwrap();
+        let presets = client.presets(&sync, imei, &who()).unwrap().unwrap().unwrap();
         assert!(presets[0].map_share);
-        // null and an empty list differ: an empty list empties the device's table.
-        assert_eq!(client.quick_texts(&sync, imei, &who()).unwrap(), None);
+        // An answer without its list differs from no answer.
+        assert_eq!(client.quick_texts(&sync, imei, &who()).unwrap(), Some(None));
         let status = client.device_sync(&sync, imei, &who()).unwrap();
         assert!(!status.synced && status.sync_data[0].last_modified.is_none());
         let requests = seen.lock().unwrap();
@@ -382,6 +409,25 @@ mod tests {
         assert!(matches!(client.contacts(&sync, "1", &who()), Err(Error::Unauthorized)));
         assert!(matches!(client.presets(&sync, "1", &who()), Err(Error::Status { status: 500, .. })));
         assert!(matches!(client.quick_texts(&sync, "1", &who()), Err(Error::Unexpected { .. })));
+    }
+
+    #[test]
+    fn a_null_answer_is_no_answer() {
+        let (base, _) = serve(|_| (200, "null".into(), None));
+        let client = Client::new("http://unused.invalid");
+        let sync = SyncInfo { sync_url: base, provisioned: true };
+        assert_eq!(client.presets(&sync, "1", &who()).unwrap(), None);
+    }
+
+    #[test]
+    fn unix_seconds_as_dotnet_counts_them() {
+        // The device's settings 89 and 97 hold these for Garmin's times.
+        assert_eq!(unix_seconds("2020-09-17T15:11:23.0610421Z"), Some(1600355483));
+        assert_eq!(unix_seconds("2020-09-19T07:21:32.2864995Z"), Some(1600500092));
+        assert_eq!(unix_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(unix_seconds("2024-02-29T12:00:00"), Some(1709208000));
+        assert_eq!(unix_seconds("yesterday"), None);
+        assert_eq!(unix_seconds("2024-13-01T00:00:00Z"), None);
     }
 
     #[test]
