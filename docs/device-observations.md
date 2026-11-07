@@ -100,7 +100,8 @@ routes, 10 track blocks of which 2 high-detail):
 
 - **Waypoints:** all 21 went to Garmin (`POST /V1/Sync/Waypoints`), Garmin answered with 21, and after
   `d,*` on Waypoints and the inserts the table held exactly those 21: same IDs, names, symbols, all
-  `SyncState` 0. So `d,*` does work on Waypoints (an insert alone would not explain it; see below).
+  `SyncState` 0. Whether `d,*` works on Waypoints is still open: Garmin sent back the same 21 IDs, so
+  inserts that replace rows by ID would give the same table without it.
   Garmin's copies differed from the device's in places: created and updated times later by seconds to
   months on 15 waypoints (never earlier, never by whole hours, so not a time-zone slip), and 5 coordinates
   off by exactly 0.000001°. Garmin's merge keeps its own, newer, copies.
