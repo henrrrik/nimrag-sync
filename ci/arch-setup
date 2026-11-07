@@ -3,6 +3,12 @@
 # nimrag-sync builds and tests with, and an unprivileged "builder" user that
 # owns the checkout, since makepkg will not run as root.
 set -eu
+# Some container hosts (the arm64 runners) refuse pacman's Landlock sandbox for
+# its downloads; it is only there to contain the downloader, so in a throwaway
+# container it may go.
+if ! pacman -Sy >/dev/null 2>&1; then
+    sed -i 's/^\[options\]$/[options]\nDisableSandbox/' /etc/pacman.conf
+fi
 pacman -Syu --noconfirm --needed base-devel git rust qt6-base qt6-declarative qt6-wayland \
     xdg-desktop-portal libsecret
 id builder >/dev/null 2>&1 || useradd -m builder
