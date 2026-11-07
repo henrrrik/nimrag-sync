@@ -8,6 +8,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# The key the packages are signed with: its private half is the
+# PACKAGE_SIGNING_KEY secret, its public half keys/nimrag-sync.asc.
+env:
+  SIGNING_KEY: B11552BD4C4AC50217E3DF954B81898113EBC4F6
+
 jobs:
   package:
     name: Package (${{ matrix.arch }})
@@ -28,6 +33,12 @@ jobs:
         run: ci/arch-setup
       - name: Tests
         run: sudo -u builder env HOME=/home/builder bin/test
+      - name: Signing key
+        env:
+          PACKAGE_SIGNING_KEY: ${{ secrets.PACKAGE_SIGNING_KEY }}
+        run: |
+          [ -n "$PACKAGE_SIGNING_KEY" ] || { echo "The PACKAGE_SIGNING_KEY secret is missing: no unsigned packages."; exit 1; }
+          printf '%s\n' "$PACKAGE_SIGNING_KEY" | sudo -u builder env HOME=/home/builder gpg --batch --import
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
@@ -35,11 +46,13 @@ jobs:
             grep -qx "pkgver=$version" pkgbuild/PKGBUILD || { echo "pkgbuild/PKGBUILD is not at $version"; exit 1; }
           fi
           cd pkgbuild
-          sudo -u builder env HOME=/home/builder PKGEXT=.pkg.tar.zst makepkg -f
+          sudo -u builder env HOME=/home/builder PKGEXT=.pkg.tar.zst GPGKEY="$SIGNING_KEY" makepkg -f --sign
       - uses: actions/upload-artifact@v7
         with:
           name: package-${{ matrix.arch }}
-          path: pkgbuild/*.pkg.tar.zst
+          path: |
+            pkgbuild/*.pkg.tar.zst
+            pkgbuild/*.pkg.tar.zst.sig
           if-no-files-found: error
 
   release:
@@ -56,14 +69,22 @@ jobs:
           merge-multiple: true
       - name: Packages
         working-directory: dist
-        run: sha256sum *.pkg.tar.zst | tee SHA256SUMS
+        run: |
+          # Every package signed, by the key in the repository.
+          gpg --batch --import ../keys/nimrag-sync.asc
+          for package in *.pkg.tar.zst; do
+            gpg --batch --status-fd 1 --verify "$package.sig" "$package" | grep -q "VALIDSIG $SIGNING_KEY" \
+              || { echo "$package: no valid signature by $SIGNING_KEY"; exit 1; }
+          done
+          sha256sum *.pkg.tar.zst | tee SHA256SUMS
       - name: Release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          gh release create "$GITHUB_REF_NAME" *.pkg.tar.zst SHA256SUMS \
+          cp ../keys/nimrag-sync.asc .
+          gh release create "$GITHUB_REF_NAME" *.pkg.tar.zst *.pkg.tar.zst.sig SHA256SUMS nimrag-sync.asc \
             --repo "$GITHUB_REPOSITORY" \
             --title "nimrag-sync ${GITHUB_REF_NAME#v}" \
             --notes-file "../docs/releases/$GITHUB_REF_NAME.md"
