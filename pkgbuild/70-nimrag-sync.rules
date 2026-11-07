@@ -1,0 +1,4 @@
+# The USB HID interface of inReach devices, for the user at the computer
+# (nimrag-sync talks to it over /dev/hidraw).
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="091e", ATTRS{idProduct}=="0b89", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1163", ATTRS{idProduct}=="0300", TAG+="uaccess"

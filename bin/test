@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
+cargo test --locked --manifest-path "$ROOT/core/Cargo.toml"
+cargo build --release --locked --manifest-path "$ROOT/core/Cargo.toml"
+
+mkdir -p "$ROOT/build/tests"
+cd "$ROOT/build/tests"
+qmake6 "$ROOT/tests/nimrag-sync_tests.pro"
+make -j"$(nproc)"
+QT_QPA_PLATFORM=offscreen ./nimrag-sync_tests

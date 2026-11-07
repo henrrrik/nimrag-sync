@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nimrag-sync
+Comment=Keep an inReach in sync: software, contacts, messages and settings
+Exec=nimrag-sync
+Icon=nimrag-sync
+Terminal=false
+Categories=Utility;
+StartupWMClass=nimrag-sync
