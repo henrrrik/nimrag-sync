@@ -22,6 +22,9 @@ Usage: nimrag-sync [open]                  open the window
                                              book, quick texts, preset messages (reads only; device on)
        nimrag-sync sync [--apply] [--json]   sync as inReach Sync does: contacts, address book, presets, quick
                                              texts, settings (a trial run, the preview, without --apply)
+       nimrag-sync update [--apply] [--reinstall] [--json]
+                                             software updates for an inReach in USB drive mode (a trial run
+                                             without --apply; --reinstall offers its own version too)
        nimrag-sync login <email>             sign in to the Garmin account; the password (typed, or piped
                                              to stdin) goes to the keyring
        nimrag-sync logout                    sign out; the password leaves the keyring
@@ -40,7 +43,7 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
     let (flags, operands): (Vec<&str>, Vec<&str>) = rest.iter().partition(|a| a.starts_with("--"));
     let json = flags.contains(&"--json");
     let apply = flags.contains(&"--apply");
-    if let Some(unknown) = flags.iter().find(|f| !["--json", "--apply"].contains(f)) {
+    if let Some(unknown) = flags.iter().find(|f| !["--json", "--apply", "--reinstall"].contains(f)) {
         let _ = writeln!(err, "nimrag-sync: unknown option {unknown}\n\n{USAGE}");
         return 1;
     }
@@ -57,6 +60,7 @@ pub fn run_in(sysfs: &Path, args: &[String], out: &mut dyn Write, err: &mut dyn 
             }
         },
         "server" => server(sysfs, operands.first().copied(), json, out, err),
+        "update" => update(apply, flags.contains(&"--reinstall"), json, out, err),
         "login" => login(operands.first().copied(), out, err),
         "preview" => preview(json, out, err),
         "sync" => sync(apply, json, out, err),
@@ -503,6 +507,81 @@ fn section<T>(out: &mut dyn Write, title: &str, c: &crate::plan::Changes<T>, sho
     }
     for item in &c.removed {
         let _ = writeln!(out, "  - {}", show(item));
+    }
+}
+
+fn update(apply: bool, reinstall: bool, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let client = crate::updates::Client::default();
+    let check = match crate::firmware::check(&client, reinstall) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            return 1;
+        }
+    };
+    if !apply {
+        if json {
+            let _ = writeln!(out, "{:#}", serde_json::to_value(&check).unwrap_or_default());
+            return 0;
+        }
+        let d = &check.device;
+        let _ = writeln!(out, "{} ({}), software {}", d.description, d.part_number, d.software_version);
+        if check.updates.is_empty() {
+            let _ = writeln!(out, "No software update: it is up to date.");
+            return 0;
+        }
+        for u in &check.updates {
+            let _ = writeln!(
+                out,
+                "{} {} ({}, {:.1} MB){} -> {}",
+                u.product_name.as_deref().unwrap_or(&u.part_number),
+                u.version.as_deref().unwrap_or("?"),
+                u.severity.as_deref().unwrap_or(""),
+                u.deliverable.size_in_bytes as f64 / 1e6,
+                if u.installation.is_reinstall { ", reinstall" } else { "" },
+                u.place().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into())
+            );
+            if let Some(eula) = u.secure_eula_url.as_deref().or(u.eula_url.as_deref()) {
+                let _ = writeln!(out, "  License: {eula}");
+            }
+        }
+        let _ = writeln!(
+            out,
+            "With --apply it is downloaded, checked, copied to the inReach's drive and the drive ejected; the \
+             inReach installs it when it restarts. Installing means accepting Garmin's license above."
+        );
+        return 0;
+    }
+    let result = crate::firmware::install(
+        &client,
+        reinstall,
+        &mut |s: &str| {
+            if !json {
+                println!("{s}…");
+            }
+        },
+        &mut |_, _| {},
+    );
+    match result {
+        Ok(done) if json => {
+            let _ = writeln!(out, "{:#}", serde_json::to_value(&done).unwrap_or_default());
+            0
+        }
+        Ok(done) if done.files.is_empty() => {
+            let _ = writeln!(out, "No software update: it is up to date.");
+            0
+        }
+        Ok(done) => {
+            for f in &done.files {
+                let _ = writeln!(out, "Copied {}", f.display());
+            }
+            let _ = writeln!(out, "The drive is ejected: the inReach installs the update when it restarts. Leave it plugged in until it is done.");
+            0
+        }
+        Err(e) => {
+            let _ = writeln!(err, "{e}");
+            1
+        }
     }
 }
 

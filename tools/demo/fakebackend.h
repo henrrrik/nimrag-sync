@@ -18,6 +18,11 @@ class FakeBackend : public QObject {
     Q_PROPERTY(QString syncStep MEMBER m_syncStep NOTIFY changed)
     Q_PROPERTY(QVariantMap syncResult MEMBER m_syncResult NOTIFY changed)
     Q_PROPERTY(QString syncError MEMBER m_syncError NOTIFY changed)
+    Q_PROPERTY(QVariantMap updateCheck MEMBER m_updateCheck NOTIFY changed)
+    Q_PROPERTY(QString updateStep MEMBER m_updateStep NOTIFY changed)
+    Q_PROPERTY(double updateProgress MEMBER m_updateProgress NOTIFY changed)
+    Q_PROPERTY(QString updateError MEMBER m_updateError NOTIFY changed)
+    Q_PROPERTY(bool updateInstalled MEMBER m_updateInstalled NOTIFY changed)
 public:
     explicit FakeBackend(const QByteArray &json) {
         const QVariantMap m = QJsonDocument::fromJson(json).object().toVariantMap();
@@ -27,6 +32,9 @@ public:
         m_preview = m.value("preview").toMap();
         m_syncStep = m.value("syncStep").toString();
         m_syncResult = m.value("syncResult").toMap();
+        m_updateCheck = m.value("updateCheck").toMap();
+        m_updateStep = m.value("updateStep").toString();
+        m_updateProgress = m.value("updateProgress").toDouble();
     }
     bool busy() const { return !m_task.isEmpty(); }
     Q_INVOKABLE void refresh() {}
@@ -36,6 +44,8 @@ public:
     Q_INVOKABLE void signOut() {}
     Q_INVOKABLE void checkSync() {}
     Q_INVOKABLE void sync() {}
+    Q_INVOKABLE void checkUpdates() {}
+    Q_INVOKABLE void installUpdates() {}
 signals:
     void changed();
     void notice(const QString &text);
@@ -43,5 +53,8 @@ signals:
 private:
     QVariantList m_devices;
     QString m_task, m_error, m_account, m_previewError, m_syncStep, m_syncError;
-    QVariantMap m_preview, m_syncResult;
+    QVariantMap m_preview, m_syncResult, m_updateCheck;
+    QString m_updateStep, m_updateError;
+    double m_updateProgress = 0;
+    bool m_updateInstalled = false;
 };

@@ -65,3 +65,15 @@ the request. Those two marks cannot tell whether anything changed; the others ca
   Whatever wrote `ms` there (most likely the phone app) would have to write it again for MapShare.
 - Settings 89 and 97 hold the quick texts' and presets' "last changed" times from Garmin, in Unix seconds,
   and matched Garmin's to the second; 73 gets the time of the sync.
+
+## Garmin's update server answers nimrag-sync as itself
+
+`POST https://omt.garmin.com/api/device-software/v1/updates` (Garmin Express's software update check),
+body `{"garminDeviceXml": <the drive's Garmin/GarminDevice.xml>, "isUserInteractive": true,
+"clientInfo": {}}`, `?filter=all` to list what the device has already: answered `200` with no
+credentials and without the `Garmin-Client-*` headers Garmin Express sends (User-Agent
+`nimrag-sync/0.1.0`, or `Garmin-Client-Name: nimrag-sync`: the same answer). For the inReach Mini on
+3.90 (2026-11-07): no update; with `filter=all` 3.90 itself (`isReinstall`), `severity` Recommended,
+`deliverable` with `secureDownloadUrl` (https://download.garmin.com/gsup/006-B2953-00/3.90/…/GUPDATE.GCD),
+`md5` and `sizeInBytes` (5 846 344), `installation` `path` Garmin, `fileName` GUPDATE.GCD. That is what
+`nimrag-sync update` uses.

@@ -33,6 +33,15 @@ char *nimrag_preview_json(void);
 typedef void (*nimrag_step_callback)(const char *step, void *context);
 char *nimrag_sync_apply(nimrag_step_callback step, void *context);
 
+// Software updates for the inReach on its USB drive: {"check": …} or {"error": "…"}.
+char *nimrag_update_check_json(int reinstall);
+
+// Downloads, checks and copies the updates to the drive, then ejects it,
+// calling step and progress on the calling thread: {"installed": …} or
+// {"error": "…", "step": "…"}. Takes minutes.
+typedef void (*nimrag_progress_callback)(unsigned long long done, unsigned long long total, void *context);
+char *nimrag_update_install(int reinstall, nimrag_step_callback step, nimrag_progress_callback progress, void *context);
+
 // The command line; returns the exit code.
 int nimrag_cli_main(int argc, const char *const *argv);
 

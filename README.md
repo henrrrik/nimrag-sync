@@ -11,8 +11,8 @@ Garmin account the inReach is on (the one of explore.garmin.com), it shows what 
 sync would change, then writes the contacts, address book, preset messages,
 quick texts and settings from Garmin to the device and tells Garmin it did. It
 keeps a copy of the device's tables first, and reads the device back after.
-Waypoints, routes and tracks are not synced yet, and software updates go the
-USB drive way (see below).
+Software updates for an inReach Mini go the way Garmin Express installs
+them: as a USB drive, the update file copied onto it.
 
 The window: plug the inReach in, sign in, switch it on if it is charging, and
 **Sync now**. The password is kept in the desktop's keyring (Secret Service,
@@ -82,6 +82,7 @@ agents. Each command takes `--json`, exits 0 or 1, and writes errors to stderr.
 | `nimrag-sync app-mode [--apply] [--json]` | restart an inReach in its normal mode (it switches on); a trial run without `--apply` |
 | `nimrag-sync tables [--json]` | the tables the inReach has and their versions (read only; needs app mode) |
 | `nimrag-sync read-table <id> [--json]` | the rows of one table as the inReach sends them (read only; needs app mode) |
+| `nimrag-sync update [--apply] [--reinstall] [--json]` | software updates for an inReach in USB drive mode: asks Garmin's update server with the drive's `GarminDevice.xml`; `--apply` downloads, checks (size, MD5), copies the file to the drive and ejects it, and the inReach installs it when it restarts; `--reinstall` offers its own version too |
 | `nimrag-sync login <email>`, `logout` | sign in (the password, typed or piped to stdin, goes to the keyring) and out |
 | `nimrag-sync preview [--json]` | what a sync would change on the inReach (reads only; the inReach must be on) |
 | `nimrag-sync sync [--apply] [--json]` | sync as inReach Sync does; a trial run, the preview, without `--apply` |

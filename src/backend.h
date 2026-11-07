@@ -17,7 +17,8 @@ class Backend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList devices READ devices NOTIFY devicesChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
-    // What the worker is doing: "", "refresh", "switch", "preview", "sync" or "sign-in".
+    // What the worker is doing: "", "refresh", "switch", "preview", "sync",
+    // "sign-in", "update-check" or "update".
     Q_PROPERTY(QString task READ task NOTIFY busyChanged)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
     // The signed-in Garmin account's email address; empty when signed out.
@@ -29,6 +30,13 @@ class Backend : public QObject {
     Q_PROPERTY(QString syncStep READ syncStep NOTIFY syncChanged)
     Q_PROPERTY(QVariantMap syncResult READ syncResult NOTIFY syncChanged)
     Q_PROPERTY(QString syncError READ syncError NOTIFY syncChanged)
+    // Software updates for a device in USB drive mode: the last check (core's
+    // firmware::Check), the install's step and download progress (0 to 1), errors.
+    Q_PROPERTY(QVariantMap updateCheck READ updateCheck NOTIFY updateChanged)
+    Q_PROPERTY(QString updateStep READ updateStep NOTIFY updateChanged)
+    Q_PROPERTY(double updateProgress READ updateProgress NOTIFY updateChanged)
+    Q_PROPERTY(QString updateError READ updateError NOTIFY updateChanged)
+    Q_PROPERTY(bool updateInstalled READ updateInstalled NOTIFY updateChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr, bool poll = true);
@@ -43,6 +51,11 @@ public:
     QString syncStep() const { return m_syncStep; }
     QVariantMap syncResult() const { return m_syncResult; }
     QString syncError() const { return m_syncError; }
+    QVariantMap updateCheck() const { return m_updateCheck; }
+    QString updateStep() const { return m_updateStep; }
+    double updateProgress() const { return m_updateProgress; }
+    QString updateError() const { return m_updateError; }
+    bool updateInstalled() const { return m_updateInstalled; }
 
     // Asks every connected device for its mode and version again.
     Q_INVOKABLE void refresh();
@@ -55,6 +68,9 @@ public:
     // What a sync would change, then the sync itself.
     Q_INVOKABLE void checkSync();
     Q_INVOKABLE void sync();
+    // Asks Garmin for software updates for the device on its drive, then installs them.
+    Q_INVOKABLE void checkUpdates();
+    Q_INVOKABLE void installUpdates();
 
     // The core's JSON as QML values; an empty list for anything that is not an array.
     static QVariantList parseDevices(const QByteArray &json);
@@ -62,6 +78,8 @@ public:
     static QStringList nodesOf(const QByteArray &json);
     // Whether any device in the list is on (app mode), which a sync needs.
     static bool anyOn(const QVariantList &devices);
+    // Whether any device in the list is a USB drive, which an update needs.
+    static bool anyDrive(const QVariantList &devices);
 
 signals:
     void devicesChanged();
@@ -70,6 +88,7 @@ signals:
     void accountChanged();
     void previewChanged();
     void syncChanged();
+    void updateChanged();
     void signInFinished(bool ok, const QString &error);
     // A short line for the window to show after an action.
     void notice(const QString &text);
@@ -82,6 +101,8 @@ private:
     void setError(const QString &error);
     void loadAccount();
     static void onStep(const char *step, void *context);
+    static void onUpdateStep(const char *step, void *context);
+    static void onUpdateProgress(unsigned long long done, unsigned long long total, void *context);
 
     QVariantList m_devices;
     QStringList m_nodes;
@@ -94,5 +115,10 @@ private:
     QString m_syncStep;
     QVariantMap m_syncResult;
     QString m_syncError;
+    QVariantMap m_updateCheck;
+    QString m_updateStep;
+    double m_updateProgress = 0;
+    QString m_updateError;
+    bool m_updateInstalled = false;
     QTimer m_poll;
 };

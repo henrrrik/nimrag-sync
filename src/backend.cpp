@@ -1,6 +1,7 @@
 #include "backend.h"
 
 #include <QJsonArray>
+#include <QJsonValue>
 #include <QJsonDocument>
 #include <QtConcurrent>
 
@@ -47,6 +48,13 @@ QStringList Backend::nodesOf(const QByteArray &json) {
     return nodes;
 }
 
+bool Backend::anyDrive(const QVariantList &devices) {
+    for (const auto &device : devices)
+        if (device.toMap().value("mode").toString() == "mass-storage")
+            return true;
+    return false;
+}
+
 bool Backend::anyOn(const QVariantList &devices) {
     for (const auto &device : devices)
         if (device.toMap().value("mode").toString() == "app")
@@ -72,6 +80,11 @@ void Backend::poll() {
         m_preview.clear();
         m_previewError.clear();
         emit previewChanged();
+    }
+    if (!m_updateCheck.isEmpty() || !m_updateError.isEmpty()) {
+        m_updateCheck.clear();
+        m_updateError.clear();
+        emit updateChanged();
     }
     refresh();
 }
@@ -120,6 +133,9 @@ void Backend::refresh() {
         // Signed in and a device is on: show at once what a sync would do.
         if (!busy() && !m_account.isEmpty() && anyOn(m_devices) && m_preview.isEmpty() && m_previewError.isEmpty())
             checkSync();
+        // A device is a USB drive: ask Garmin for its software updates at once.
+        else if (!busy() && anyDrive(m_devices) && m_updateCheck.isEmpty() && m_updateError.isEmpty() && !m_updateInstalled)
+            checkUpdates();
     });
     watcher->setFuture(QtConcurrent::run([] { return take(nimrag_devices_json(1)); }));
 }
@@ -206,6 +222,53 @@ void Backend::sync() {
         if (m_syncError.isEmpty())
             emit notice(tr("Synced with Garmin."));
     });
+}
+
+void Backend::checkUpdates() {
+    start("update-check", [] { return take(nimrag_update_check_json(0)); }, [this](const QJsonObject &answer) {
+        m_updateError = answer.value("error").toString();
+        m_updateCheck = answer.value("check").toObject().toVariantMap();
+        emit updateChanged();
+    });
+}
+
+void Backend::onUpdateStep(const char *step, void *context) {
+    auto *self = static_cast<Backend *>(context);
+    const QString text = QString::fromUtf8(step);
+    QMetaObject::invokeMethod(self, [self, text] {
+        self->m_updateStep = text;
+        self->m_updateProgress = 0;
+        emit self->updateChanged();
+    }, Qt::QueuedConnection);
+}
+
+void Backend::onUpdateProgress(unsigned long long done, unsigned long long total, void *context) {
+    auto *self = static_cast<Backend *>(context);
+    const double share = total ? double(done) / double(total) : 0;
+    QMetaObject::invokeMethod(self, [self, share] {
+        // Only steps a bar can show, not every 64 KB.
+        if (share - self->m_updateProgress >= 0.01 || share >= 1) {
+            self->m_updateProgress = share;
+            emit self->updateChanged();
+        }
+    }, Qt::QueuedConnection);
+}
+
+void Backend::installUpdates() {
+    m_updateError.clear();
+    m_updateStep.clear();
+    m_updateProgress = 0;
+    emit updateChanged();
+    start("update", [this] { return take(nimrag_update_install(0, &Backend::onUpdateStep, &Backend::onUpdateProgress, this)); },
+          [this](const QJsonObject &answer) {
+              m_updateStep.clear();
+              m_updateError = answer.value("error").toString();
+              m_updateInstalled = m_updateError.isEmpty() && !answer.value("installed").toObject().value("files").toArray().isEmpty();
+              m_updateCheck.clear();
+              emit updateChanged();
+              if (m_updateInstalled)
+                  emit notice(tr("The update is on the inReach; it installs it when it restarts."));
+          });
 }
 
 void Backend::setError(const QString &error) {

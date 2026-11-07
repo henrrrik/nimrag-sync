@@ -92,6 +92,12 @@ Rectangle {
             Layout.fillWidth: true
         }
 
+        SoftwareSection {
+            visible: panel.isDrive || backend.updateInstalled
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+        }
+
         Rectangle {
             visible: panel.version !== null
             color: "#2a2a30"

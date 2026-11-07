@@ -133,6 +133,51 @@ pub extern "C" fn nimrag_sync_apply(step: Option<StepCallback>, context: *mut st
     })
 }
 
+/// Software updates for the inReach on its drive: `{"check": …}` or `{"error": "…"}`.
+/// Asks Garmin: call it off the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_update_check_json(reinstall: c_int) -> *mut c_char {
+    answer(
+        crate::firmware::check(&crate::updates::Client::default(), reinstall != 0)
+            .map(|c| serde_json::json!({ "check": c })),
+    )
+}
+
+/// Progress of a download: bytes so far and in all, and the caller's `context`.
+pub type ProgressCallback = extern "C" fn(done: u64, total: u64, context: *mut std::ffi::c_void);
+
+/// Downloads, checks and puts the updates on the inReach's drive, then ejects
+/// it: `{"installed": …}` or `{"error": "…", "step": "…"}`. Takes minutes:
+/// call it off the UI thread; `step` and `progress` are called on it.
+#[unsafe(no_mangle)]
+pub extern "C" fn nimrag_update_install(
+    reinstall: c_int,
+    step: Option<StepCallback>,
+    progress: Option<ProgressCallback>,
+    context: *mut std::ffi::c_void,
+) -> *mut c_char {
+    let mut last = String::new();
+    let result = crate::firmware::install(
+        &crate::updates::Client::default(),
+        reinstall != 0,
+        &mut |s: &str| {
+            last = s.to_string();
+            if let (Some(cb), Ok(text)) = (step, CString::new(s)) {
+                cb(text.as_ptr(), context);
+            }
+        },
+        &mut |done, total| {
+            if let Some(cb) = progress {
+                cb(done, total, context);
+            }
+        },
+    );
+    to_c(match result {
+        Ok(done) => serde_json::json!({ "installed": done }).to_string(),
+        Err(e) => serde_json::json!({ "error": e, "step": last }).to_string(),
+    })
+}
+
 /// The command line: `argv` as `main` got it. Returns the exit code.
 ///
 /// # Safety

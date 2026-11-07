@@ -367,8 +367,8 @@ pub fn apply(
     if let Some(offer) = &g.firmware_update {
         return Err(format!(
             "Garmin offers software {}.{}.{} for this inReach. inReach Sync installs it before anything else; \
-             nimrag-sync does not install software this way yet. Install it first (on an inReach Mini: \
-             nimrag-sync drive-mode --apply, then openExpress or Garmin's own tools), then sync.",
+             nimrag-sync does not install software that way. Install it first (on an inReach Mini, as a \
+             USB drive: nimrag-sync drive-mode --apply, then nimrag-sync update --apply), then sync.",
             offer.version_major, offer.version_minor, offer.version_rev
         ));
     }

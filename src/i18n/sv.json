@@ -95,5 +95,19 @@
  "The inReach restarts and switches on…": "inReach startar om och slås på…",
  "The inReach is on already.": "inReach är redan på.",
  "Wait until the inReach is done, then try again.": "Vänta tills inReach är klar och försök sedan igen.",
- "Synced with Garmin.": "Synkad med Garmin."
+ "Synced with Garmin.": "Synkad med Garmin.",
+ "The update is on the inReach; it installs it when it restarts.": "Uppdateringen finns på inReach; den installeras när den startar om.",
+ "Downloading %1": "Hämtar %1",
+ "Asking Garmin for software updates": "Frågar Garmin efter programuppdateringar",
+ "Copying the update to the inReach": "Kopierar uppdateringen till inReach",
+ "Ejecting the inReach's drive": "Matar ut inReachens enhet",
+ "Software updates": "Programuppdateringar",
+ "Asking Garmin for software updates…": "Frågar Garmin efter programuppdateringar…",
+ "Keep the inReach plugged in.": "Låt inReach vara ansluten.",
+ "The update is on the inReach and its drive is ejected. Leave it plugged in: it installs the update when it restarts.": "Uppdateringen finns på inReach och dess enhet är utmatad. Låt den vara ansluten: den installerar uppdateringen när den startar om.",
+ "Software %1 is up to date.": "Programvara %1 är den senaste.",
+ "%1 %2 is available (%3 MB).": "%1 %2 finns (%3 MB).",
+ "Install update": "Installera uppdateringen",
+ "Installing it means accepting <a href=\"%1\">Garmin's license</a>.": "Att installera den innebär att du godkänner <a href=\"%1\">Garmins licens</a>.",
+ "Check for a software update": "Leta efter programuppdatering"
 }
