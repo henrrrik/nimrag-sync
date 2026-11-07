@@ -108,3 +108,23 @@ routes, 10 track blocks of which 2 high-detail):
 - **Tracks:** Garmin's newest point was from 2020-09-17; one high-detail block was newer and went to Garmin
   (`POST /V1/Sync/Tracks`), which answered `insertCount` 1.
 - **Routes:** none on the device, none from Garmin (`POST /V1/Sync/Routes` answered `[]`).
+
+## The third sync: Garmin's device commands, 2026-11-07
+
+`GET /V1/Sync/Plans?imei=…&trackingInterval=600` answered three commands, each with `TransactionId` null
+and `StatusCode` 3 (completed): Garmin hands back its standing commands for the device's plan and
+account on every check, and inReach Sync runs whatever comes (it does not look at the status). Their
+scripts:
+
+- table 7 (Settings): `i,1232,44`, `i,1240,0`, `d,1256`, `d,504`, `i,24,600`, `i,48,14400`, `i,488,9`,
+  `i,520,10`, `i,232,0`, `i,248,0`, `i,240,0`, `i,432,1`, `i,864,…`; then table 8 (Configuration):
+  `i,24,0,600,1200,1800,3600,7200,14400` (the tracking intervals on offer);
+- table 7: `i,26,<the inReach address>`;
+- table 7: `d,149`, `i,264,1`.
+
+Sub-commands are separated by `\r\r`, lines by `\r`; each starts with the table and version bytes. All
+were taken. Afterwards the device had Garmin's values for the five settings that differed (1232 was
+missing; 1240, 520, 232 and 248 had other values) and the Configuration row in the command's order (the
+device had had `0` last). The deletes named rows the device did not have; settings 24 and 48 were already
+the same. What 1232, 1240, 520, 232 and 248 control is not known. The acknowledgement (`POST
+/V1/Sync/Plans?imei=…`, the list with `StatusCode` 1) was taken.
