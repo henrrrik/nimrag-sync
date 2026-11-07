@@ -178,3 +178,8 @@ and with Garmin's servers, read from its code. `docs/device-observations.md` and
 nimrag-sync is not made by or affiliated with Garmin. inReach, Explore and MapShare are Garmin's
 trademarks. It talks to Garmin's inReach service with your own account, as inReach Sync does, and asks
 Garmin's update server for software as itself.
+
+## License
+
+MIT, see [LICENSE](LICENSE). `src/theme.*`, `src/translator.*` and the project layout follow Omacut and
+Monologue (MIT, David Heinemeier Hansson).
