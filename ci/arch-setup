@@ -10,6 +10,6 @@ if ! pacman -Sy >/dev/null 2>&1; then
     sed -i 's/^\[options\]$/[options]\nDisableSandbox/' /etc/pacman.conf
 fi
 pacman -Syu --noconfirm --needed base-devel git rust qt6-base qt6-declarative qt6-wayland \
-    xdg-desktop-portal libsecret
+    xdg-desktop-portal libsecret udisks2
 id builder >/dev/null 2>&1 || useradd -m builder
 chown -R builder: "$PWD"
