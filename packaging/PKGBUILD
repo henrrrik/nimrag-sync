@@ -9,6 +9,9 @@ url='https://github.com/henrrrik/nimrag-sync'
 license=('MIT')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'xdg-desktop-portal' 'libsecret')
 makedepends=('gcc' 'make' 'cargo')
+# makepkg's LTO turns the C parts of Rust crates (ring) into GCC bytecode that
+# the final link, which is not LTO, cannot use.
+options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
