@@ -5,13 +5,16 @@
 //!
 //! It does what inReach Sync 1.4.47 does (SyncManager.cs, SyncDevice.cs):
 //! when Garmin answers for any of contacts, presets or quick texts, SyncData
-//! is cleared (`d,*`, which on the device spares the address book) and only
-//! what Garmin sent is written back; the
+//! is cleared (`d,*`, which on the device spares the address book) and what
+//! Garmin sent is written back; the
 //! contacts Garmin put on the device (Synced = 1) are replaced and those made
 //! on the device kept; settings 89 and 97 get the quick texts' and presets'
 //! "last changed" times, and 73 the time of the sync. The one departure: a
 //! preset too long for the device makes inReach Sync loop forever, so here its
-//! last recipients are dropped until it fits, as that code meant to.
+//! last recipients are dropped until it fits, as that code meant to. Another:
+//! inReach Sync loses the quick texts or presets when Garmin sends no list
+//! of them while clearing SyncData for another kind; here the device's rows
+//! of that kind are written back.
 
 use std::collections::BTreeMap;
 
@@ -136,6 +139,14 @@ impl Item {
     }
 }
 
+/// A preset too long for the device: its message, and the last recipients
+/// left out so that it fits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PresetCut {
+    pub message: String,
+    pub recipients: Vec<String>,
+}
+
 /// What happens to one kind of data.
 #[derive(Debug, Clone, Serialize)]
 pub struct Changes<T> {
@@ -167,6 +178,8 @@ pub struct Plan {
     pub addresses: Changes<Item>,
     pub quick_texts: Changes<Item>,
     pub presets: Changes<Item>,
+    /// Presets too long for the device, and the recipients each loses to fit.
+    pub presets_recipients_dropped: Vec<PresetCut>,
     /// Address-book rows no Garmin contact has. Clearing SyncData (`d,*`)
     /// spares the address book on the device, so they stay (docs/device-observations.md).
     pub addresses_kept: Vec<Item>,
@@ -189,6 +202,10 @@ pub struct Plan {
     /// The SyncData rows a sync writes, in order, after clearing the table.
     #[serde(skip)]
     pub sync_data: Vec<Item>,
+    /// The device's quick texts and presets of a kind Garmin sent no list
+    /// for, written back right after the table is cleared.
+    #[serde(skip)]
+    pub kept_sync_data: Vec<Item>,
     /// The contacts a sync writes, and the device IDs of the synced rows it deletes first.
     #[serde(skip)]
     pub contact_rows: Vec<ContactFields>,
@@ -212,12 +229,18 @@ impl Plan {
 /// A line longer than the device takes (its bytes plus 6 over 2000) loses its
 /// last recipients until it fits.
 pub fn preset_value(p: &Preset) -> String {
+    preset_fitted(p).0
+}
+
+/// The preset's value, and the recipients dropped to make it fit.
+fn preset_fitted(p: &Preset) -> (String, Vec<String>) {
     let mut recipients = p.recipients.clone();
     loop {
         let value = format!("{}|{}", recipients.join(","), p.message);
         let line = Item { kind: PRESET, short_code: 14, value: value.clone() }.insert_line();
         if line.len() + 2 + 6 <= 2000 || recipients.is_empty() {
-            return value;
+            let dropped = p.recipients[recipients.len()..].to_vec();
+            return (value, dropped);
         }
         recipients.pop();
     }
@@ -296,6 +319,12 @@ impl SettingsPlan {
     }
 }
 
+/// A value for inside a quoted CSV field of a script line: quotes doubled,
+/// and no line breaks, which would end the line.
+fn quoted(value: &str) -> String {
+    value.replace('"', "\"\"").replace(['\r', '\n'], " ")
+}
+
 /// The settings step for a device whose Settings table text is given.
 pub fn settings_plan(settings_text: &str, server: Option<&[(String, String)]>) -> SettingsPlan {
     let mut plan = SettingsPlan::default();
@@ -330,9 +359,9 @@ pub fn settings_plan(settings_text: &str, server: Option<&[(String, String)]>) -
             continue;
         }
         let default = if id == 760 { value.clone() } else { have.map(|h| h.1.clone()).unwrap_or_default() };
-        let mut line = format!("i,{id},\"{value}\"");
+        let mut line = format!("i,{id},\"{}\"", quoted(value));
         if !default.trim().is_empty() {
-            line.push_str(&format!(",\"{default}\""));
+            line.push_str(&format!(",\"{}\"", quoted(&default)));
         }
         plan.lines.push(line);
         let default_now = have.map(|h| h.1.as_str()).unwrap_or("");
@@ -417,23 +446,41 @@ pub fn plan(
             .map(|q| Item { kind: QUICK_TEXT, short_code: q.id as u32, value: q.text.clone() })
             .collect::<Vec<_>>()
     });
+    let mut presets_recipients_dropped = Vec::new();
     let presets_wanted = server.presets.list().map(|list| {
         list.iter()
             .zip(PRESET_SLOTS)
-            .map(|(p, slot)| Item { kind: PRESET, short_code: slot, value: preset_value(p) })
+            .map(|(p, slot)| {
+                let (value, dropped) = preset_fitted(p);
+                if !dropped.is_empty() {
+                    presets_recipients_dropped.push(PresetCut { message: p.message.clone(), recipients: dropped });
+                }
+                Item { kind: PRESET, short_code: slot, value }
+            })
             .collect::<Vec<_>>()
     });
 
     let mut sync_data = Vec::new();
+    let mut kept_sync_data = Vec::new();
     let mut kind_changes = |kind: u32, wanted: Option<Vec<Item>>| {
         let mut have = current.remove(&kind).unwrap_or_default();
         let mut changes = Changes::default();
+        // Garmin sent no list for it: the device keeps its rows. When the
+        // table is cleared for another kind, they are written back after.
+        let Some(wanted) = wanted else {
+            if clears {
+                kept_sync_data.extend(have.iter().cloned());
+            }
+            changes.left_alone = true;
+            changes.unchanged = have;
+            return changes;
+        };
         if !clears {
             changes.left_alone = true;
             changes.unchanged = have;
             return changes;
         }
-        for item in wanted.unwrap_or_default() {
+        for item in wanted {
             if let Some(i) = have.iter().position(|h| *h == item) {
                 have.remove(i);
                 changes.unchanged.push(item.clone());
@@ -451,6 +498,8 @@ pub fn plan(
     let addresses_kept = std::mem::take(&mut addresses.removed);
     let quick_texts = kind_changes(QUICK_TEXT, quick_texts_wanted);
     let presets = kind_changes(PRESET, presets_wanted);
+    // The address book survives `d,*` on the device: nothing to write back.
+    kept_sync_data.retain(|i: &Item| i.kind != ADDRESS);
     let wrote_any = server.contacts.list().is_some() || server.presets.list().is_some() || server.quick_texts.list().is_some();
     let breadcrumb = current.remove(&BREADCRUMB).unwrap_or_default();
     let mut other_sync_data_removed: Vec<Item> = Vec::new();
@@ -482,6 +531,7 @@ pub fn plan(
         addresses_kept,
         quick_texts,
         presets,
+        presets_recipients_dropped,
         other_sync_data_removed,
         timestamps,
         settings,
@@ -491,6 +541,7 @@ pub fn plan(
         presets_listed: server.presets.list().is_some(),
         quick_texts_listed: server.quick_texts.list().is_some(),
         sync_data,
+        kept_sync_data,
         contact_rows,
         contact_ids_to_delete,
     })
@@ -598,9 +649,12 @@ mod tests {
         assert_eq!(p.contacts.removed.iter().map(|c| c.first_name.as_str()).collect::<Vec<_>>(), ["Old"]);
         assert_eq!(p.addresses.added[0].short_code, 13);
         assert_eq!(p.addresses_kept.len(), 2);
-        // Presets and quick texts were not answered, but clearing SyncData removes them all the same.
-        assert_eq!(p.presets.removed.len(), 1);
-        assert_eq!(p.quick_texts.removed.len(), 1);
+        // Presets and quick texts were not answered: clearing SyncData for the
+        // contacts must not cost them, so they are written back.
+        assert!(p.presets.removed.is_empty() && p.quick_texts.removed.is_empty());
+        assert!(p.presets.left_alone && p.quick_texts.left_alone);
+        assert_eq!(p.kept_sync_data.iter().map(|i| (i.kind, i.short_code)).collect::<Vec<_>>(), [(QUICK_TEXT, 30), (PRESET, 14)]);
+        assert!(!p.sync_data.iter().any(|i| i.kind == QUICK_TEXT || i.kind == PRESET));
         assert_eq!(p.timestamps, [(73, "1789300000".to_string())]);
     }
 
@@ -613,9 +667,11 @@ mod tests {
 
     #[test]
     fn an_answer_without_its_list() {
-        // Presets answered without a list: cleared, nothing written, no time for them.
+        // Presets answered without a list: the table is cleared, the device's
+        // rows written back, nothing of Garmin's, no time for them.
         let p = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NotSent, Sent::NoList, Sent::NotSent)).unwrap();
-        assert!(p.clears_sync_data && p.presets.removed.len() == 1 && p.sync_data.is_empty());
+        assert!(p.clears_sync_data && p.presets.removed.is_empty() && p.sync_data.is_empty());
+        assert_eq!(p.kept_sync_data.len(), 2);
         assert_eq!(p.timestamps, [(73, "1789300000".to_string())]);
         // Contacts without a list would cost the synced contacts: refused.
         assert!(plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NoList, Sent::NotSent, Sent::NotSent)).is_err());
@@ -629,6 +685,19 @@ mod tests {
         let line = Item { kind: PRESET, short_code: 14, value: value.clone() }.insert_line();
         assert!(line.len() + 2 + 6 <= 2000);
         assert!(value.starts_with("person0@example.com,person1@example.com,") && value.ends_with("|Hi"));
+        // The plan tells whom the preset no longer reaches.
+        let presets = [p];
+        let plan = plan(5, CONTACTS_V5, SYNC_DATA, "", &from(Sent::NotSent, Sent::List(&presets), Sent::NotSent)).unwrap();
+        let cut = &plan.presets_recipients_dropped[0];
+        assert_eq!(cut.message, "Hi");
+        assert_eq!(cut.recipients.last().unwrap(), "person299@example.com");
+        assert_eq!(value.split('|').next().unwrap().split(',').count() + cut.recipients.len(), 300);
+    }
+
+    #[test]
+    fn quotes_in_settings_are_doubled() {
+        let p = settings_plan("40,50,\"say \"\"x\"\"\"\r\n", Some(&settings(&[("40", "a\"b\nc")])));
+        assert_eq!(p.lines, ["i,40,\"a\"\"b c\",\"say \"\"x\"\"\""]);
     }
 
     #[test]

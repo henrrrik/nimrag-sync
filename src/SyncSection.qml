@@ -73,6 +73,13 @@ ColumnLayout {
             out[0].text += " · " + qsTr("%1 made on the device kept").arg(plan.device_contacts_kept)
         if (plan.addresses_kept.length > 0)
             out[1].text += " · " + qsTr("%1 the device keeps").arg(plan.addresses_kept.length)
+        var cut = 0
+        for (var p of plan.presets_recipients_dropped)
+            cut += p.recipients.length
+        if (cut > 0) {
+            out[2].text += " · " + qsTr("too long for the inReach: %1 recipient(s) left out").arg(cut)
+            out[2].changed = true
+        }
         var places = section.preview.places
         if (places) {
             out.push({ title: qsTr("Waypoints"), text: places.waypoints === null ? qsTr("not synced")

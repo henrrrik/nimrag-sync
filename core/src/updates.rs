@@ -93,6 +93,9 @@ struct Answer {
     updates: Vec<Update>,
 }
 
+/// The most a download may be (256 MB).
+const MAX_DOWNLOAD: u64 = 256 << 20;
+
 pub struct Client {
     agent: ureq::Agent,
     base: String,
@@ -161,12 +164,16 @@ impl Client {
             return Err(fail(format!("was answered {status}")));
         }
         let expected = update.deliverable.size_in_bytes;
+        // An inReach's software is a few megabytes; more is a wrong answer.
+        if expected > MAX_DOWNLOAD {
+            return Err(fail(format!("would be {expected} bytes, more than an inReach's software can be")));
+        }
         let mut reader = response
             .body_mut()
             .with_config()
             .limit(expected.saturating_add(1))
             .reader();
-        let mut data = Vec::with_capacity(expected as usize);
+        let mut data = Vec::with_capacity(expected.min(16 << 20) as usize);
         let mut chunk = [0u8; 64 * 1024];
         loop {
             let n = reader.read(&mut chunk).map_err(|e| fail(format!("broke off: {e}")))?;

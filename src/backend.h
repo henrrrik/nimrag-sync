@@ -40,6 +40,9 @@ class Backend : public QObject {
 
 public:
     explicit Backend(QObject *parent = nullptr, bool poll = true);
+    // Waits for a running task: its worker calls back into this object, and
+    // stopping a sync or an install half-way would leave the inReach half-written.
+    ~Backend() override;
 
     QVariantList devices() const { return m_devices; }
     bool busy() const { return !m_task.isEmpty(); }
@@ -121,4 +124,6 @@ private:
     QString m_updateError;
     bool m_updateInstalled = false;
     QTimer m_poll;
+    // The task on the worker thread, if any.
+    QFuture<QByteArray> m_running;
 };

@@ -196,7 +196,15 @@ impl Client {
     /// on an account (then its data needs the account's credentials).
     pub fn sync_info(&self, imei: &str) -> Result<SyncInfo, Error> {
         let url = format!("{}/V1/SyncURL", self.account_api);
-        self.get_json(&url, &[("IMEI", imei)], None, "the sync server lookup")
+        let info: SyncInfo = self.get_json(&url, &[("IMEI", imei)], None, "the sync server lookup")?;
+        // The account's password goes to this server with every request.
+        if !info.sync_url.starts_with("https://") {
+            return Err(Error::Unexpected {
+                what: "the sync server lookup".into(),
+                detail: format!("the sync server {:?} is not an HTTPS address", info.sync_url),
+            });
+        }
+        Ok(info)
     }
 
     pub fn device_sync(&self, sync: &SyncInfo, imei: &str, who: &Credentials) -> Result<DeviceSync, Error> {
@@ -270,7 +278,9 @@ impl Client {
     ) -> Result<Vec<crate::places::Waypoint>, Error> {
         let body = serde_json::json!({ "imei": imei_number(imei), "waypoints": waypoints });
         let list: Option<Vec<crate::places::Waypoint>> = self.post_json(sync, "Waypoints", &body, who, "the waypoints")?;
-        Ok(list.unwrap_or_default())
+        // An empty list is Garmin's answer; none at all is not, and would
+        // clear the device's waypoints.
+        list.ok_or_else(|| Error::Unexpected { what: "the waypoints".into(), detail: "no list in the answer".into() })
     }
 
     /// Sends the device's routes; Garmin answers with the merged list, each
@@ -285,7 +295,9 @@ impl Client {
     ) -> Result<Vec<crate::places::Route>, Error> {
         let body = serde_json::json!({ "imei": imei_number(imei), "trackBlockVersion": track_block_version, "routes": routes });
         let list: Option<Vec<crate::places::Route>> = self.post_json(sync, "Routes", &body, who, "the routes")?;
-        Ok(list.unwrap_or_default())
+        // An empty list is Garmin's answer; none at all is not, and would
+        // clear the device's routes.
+        list.ok_or_else(|| Error::Unexpected { what: "the routes".into(), detail: "no list in the answer".into() })
     }
 
     /// Sends track blocks as the device has them (InsertTracks); how many Garmin took.

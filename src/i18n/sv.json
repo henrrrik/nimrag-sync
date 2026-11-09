@@ -55,6 +55,7 @@
  "Quick texts": "Snabbtexter",
  "%1 made on the device kept": "%1 skapade på enheten behålls",
  "%1 the device keeps": "%1 som enheten behåller",
+ "too long for the inReach: %1 recipient(s) left out": "för lång för inReach: %1 mottagare utelämnas",
  "Waypoints": "Vägpunkter",
  "not synced": "synkas inte",
  "the device's %1 go to Garmin, which sends back its merged list": "enhetens %1 skickas till Garmin, som skickar tillbaka sin sammanslagna lista",

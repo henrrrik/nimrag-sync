@@ -35,6 +35,11 @@ Backend::Backend(QObject *parent, bool poll) : QObject(parent) {
     }
 }
 
+Backend::~Backend() {
+    m_poll.stop();
+    m_running.waitForFinished();
+}
+
 QVariantList Backend::parseDevices(const QByteArray &json) {
     const QJsonDocument document = QJsonDocument::fromJson(json);
     return document.isArray() ? document.array().toVariantList() : QVariantList{};
@@ -81,9 +86,15 @@ void Backend::poll() {
         m_previewError.clear();
         emit previewChanged();
     }
-    if (!m_updateCheck.isEmpty() || !m_updateError.isEmpty()) {
+    // Every device unplugged: an update installed earlier was another's (or
+    // done), so the next device gets its own check. Not on a mere restart,
+    // which the installing device goes through.
+    const bool forgetInstalled = m_updateInstalled && nodes.isEmpty();
+    if (!m_updateCheck.isEmpty() || !m_updateError.isEmpty() || forgetInstalled) {
         m_updateCheck.clear();
         m_updateError.clear();
+        if (forgetInstalled)
+            m_updateInstalled = false;
         emit updateChanged();
     }
     refresh();
@@ -103,7 +114,8 @@ bool Backend::start(const QString &task, std::function<QByteArray()> work, std::
         done(object(result));
         finish();
     });
-    watcher->setFuture(QtConcurrent::run(std::move(work)));
+    m_running = QtConcurrent::run(std::move(work));
+    watcher->setFuture(m_running);
     return true;
 }
 
@@ -137,7 +149,8 @@ void Backend::refresh() {
         else if (!busy() && anyDrive(m_devices) && m_updateCheck.isEmpty() && m_updateError.isEmpty() && !m_updateInstalled)
             checkUpdates();
     });
-    watcher->setFuture(QtConcurrent::run([] { return take(nimrag_devices_json(1)); }));
+    m_running = QtConcurrent::run([] { return take(nimrag_devices_json(1)); });
+    watcher->setFuture(m_running);
 }
 
 void Backend::switchToDrive(const QString &node) {

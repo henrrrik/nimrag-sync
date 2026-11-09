@@ -397,6 +397,15 @@ fn show_plan(out: &mut dyn Write, plan: &crate::plan::Plan) {
         let (to, message) = i.value.split_once('|').unwrap_or(("", &i.value));
         format!("{message}  (to {to})")
     });
+    for cut in &plan.presets_recipients_dropped {
+        let _ = writeln!(
+            out,
+            "  Too long for the inReach: \"{}\" leaves out {} recipient(s): {}",
+            cut.message,
+            cut.recipients.len(),
+            cut.recipients.join(", ")
+        );
+    }
     if !plan.other_sync_data_removed.is_empty() {
         let _ = writeln!(out, "Other sync data: {} rows cleared", plan.other_sync_data_removed.len());
     }

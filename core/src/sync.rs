@@ -158,16 +158,57 @@ fn read(dev: &mut InReach<device::Hidraw>, table: u8, name: &str) -> Result<(u8,
     Ok((version, dev.read_table(table, version).map_err(|e| e.to_string())?))
 }
 
-fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Result<Gathered, String> {
-    let (found, mut dev) = open_on(sysfs)?;
-    let v = dev.version().map_err(|e| e.to_string())?;
-    let (settings_version, settings_text) = read(&mut dev, SETTINGS, "Settings")?;
-    let imei = crate::csv::parse(&settings_text)
+/// The IMEI in a Settings table's text (setting 9).
+fn imei_in(settings_text: &str) -> Result<String, String> {
+    crate::csv::parse(settings_text)
         .into_iter()
         .find(|r| r.first().map(String::as_str) == Some("9"))
         .and_then(|r| r.get(1).cloned())
         .filter(|i| i.len() == 15 && i.bytes().all(|b| b.is_ascii_digit()))
-        .ok_or("The inReach did not tell its IMEI.")?;
+        .ok_or_else(|| "The inReach did not tell its IMEI.".to_string())
+}
+
+/// Opens the device `g` was read from again, after the requests to Garmin:
+/// the node may now be another inReach's, or the same one no longer on.
+fn reopen(g: &Gathered) -> Result<InReach<device::Hidraw>, String> {
+    let changed = "The inReach changed while Garmin's service was asked (unplugged, switched off or another \
+                   one plugged in). Nothing was written; sync again.";
+    let mut dev = InReach::open(&g.found).map_err(|e| e.to_string())?;
+    if dev.app_mode().map_err(|e| e.to_string())? != AppMode::App {
+        return Err(changed.into());
+    }
+    let (_, settings_text) = read(&mut dev, SETTINGS, "Settings")?;
+    if imei_in(&settings_text)? != g.imei {
+        return Err(changed.into());
+    }
+    Ok(dev)
+}
+
+/// Held for a whole preview or sync, so that another nimrag-sync does not
+/// read or write the device between this one's steps (it lets go of the
+/// device while Garmin's service is asked). Released when dropped.
+fn session_lock() -> Result<std::fs::File, String> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(data_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let path = dir.join("nimrag-sync.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    device::lock_exclusive(&file, Duration::ZERO).map_err(|e| match e.kind() {
+        std::io::ErrorKind::WouldBlock => device::Error::Busy.to_string(),
+        _ => format!("cannot lock {}: {e}", path.display()),
+    })?;
+    Ok(file)
+}
+
+fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Result<Gathered, String> {
+    let (found, mut dev) = open_on(sysfs)?;
+    let v = dev.version().map_err(|e| e.to_string())?;
+    let (settings_version, settings_text) = read(&mut dev, SETTINGS, "Settings")?;
+    let imei = imei_in(&settings_text)?;
     let (contacts_version, contacts_text) = read(&mut dev, plan::CONTACTS, "Contacts")?;
     let (sync_data_version, sync_data_text) = read(&mut dev, plan::SYNC_DATA, "SyncData")?;
     let waypoints_text = read_if(&mut dev, places::WAYPOINTS, places::WAYPOINTS_VERSION)?;
@@ -277,6 +318,7 @@ fn gather(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Re
 /// What a sync of the first connected inReach would change. Reads the device
 /// (it must be on: app mode) and Garmin's service, writes nothing.
 pub fn preview(sysfs: &Path, config: &Path, keyring: &Keyring, client: &Client) -> Result<Preview, String> {
+    let _lock = session_lock()?;
     let g = gather(sysfs, config, keyring, client)?;
     Ok(Preview {
         device: g.product,
@@ -303,15 +345,33 @@ pub fn data_dir() -> PathBuf {
 /// `dir/backups/<imei>/<time>/table-<id>.csv`, readable by the user only.
 fn backup(dir: &Path, imei: &str, tables: &[(u8, String)]) -> Result<PathBuf, String> {
     use std::os::unix::fs::DirBuilderExt;
-    let folder = dir.join("backups").join(imei).join(now().to_string());
+    use std::io::Write;
+    let parent = dir.join("backups").join(imei);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&folder)
-        .map_err(|e| format!("cannot keep a backup in {}: {e}", folder.display()))?;
+        .create(&parent)
+        .map_err(|e| format!("cannot keep a backup in {}: {e}", parent.display()))?;
+    // A new folder each time: one made in the same second gets a suffix.
+    let time = now();
+    let mut n = 0;
+    let folder = loop {
+        let name = if n == 0 { time.to_string() } else { format!("{time}-{n}") };
+        let folder = parent.join(name);
+        match std::fs::DirBuilder::new().mode(0o700).create(&folder) {
+            Ok(()) => break folder,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 100 => n += 1,
+            Err(e) => return Err(format!("cannot keep a backup in {}: {e}", folder.display())),
+        }
+    };
     for (id, text) in tables {
         let path = folder.join(format!("table-{id}.csv"));
-        std::fs::write(&path, text).map_err(|e| format!("cannot keep a backup in {}: {e}", path.display()))?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(text.as_bytes()))
+            .map_err(|e| format!("cannot keep a backup in {}: {e}", path.display()))?;
     }
     Ok(folder)
 }
@@ -362,6 +422,7 @@ pub fn apply(
     client: &Client,
     step: &mut dyn FnMut(&str),
 ) -> Result<Applied, String> {
+    let _lock = session_lock()?;
     step("Reading the inReach and Garmin's service");
     let g = gather(sysfs, config, keyring, client)?;
     if let Some(offer) = &g.firmware_update {
@@ -372,7 +433,6 @@ pub fn apply(
             offer.version_major, offer.version_minor, offer.version_rev
         ));
     }
-    let backup_dir = backup(data, &g.imei, &g.tables)?;
     let p = &g.plan;
     let max = device::max_script_len(&g.product, &g.firmware);
     let (sync_data, contacts, settings) = (plan::SYNC_DATA, plan::CONTACTS, SETTINGS);
@@ -381,24 +441,51 @@ pub fn apply(
     let lines = |items: &[plan::Item]| items.iter().map(plan::Item::insert_line).collect::<Vec<_>>();
     let e = |e: device::Error| e.to_string();
     let s = |e: server::Error| e.to_string();
+    let breadcrumb = vec![plan::Item { kind: plan::BREADCRUMB, short_code: 0, value: "sbc".into() }.insert_line()];
+
+    // Every line the plan writes must fit before anything is cleared: a
+    // write that fails half-way would leave the device without them.
+    let deletes: Vec<String> = p.contact_ids_to_delete.iter().map(|id| format!("d,{id}")).collect();
+    let inserts: Vec<String> = p.contact_rows.iter().map(|c| c.insert_line(columns)).collect();
+    let device_type_line: Vec<String> = p
+        .settings
+        .device_type_change
+        .iter()
+        .map(|c| format!("i,16,{}", c.to.clone().unwrap_or_default()))
+        .collect();
+    let timestamp_lines: Vec<String> = p.timestamps.iter().map(|(i, v)| format!("i,{i},{v}")).collect();
+    device::check_lines(
+        deletes
+            .iter()
+            .chain(&inserts)
+            .chain(&lines(&p.sync_data))
+            .chain(&lines(&p.kept_sync_data))
+            .chain(&breadcrumb)
+            .chain(&p.settings.lines)
+            .chain(&device_type_line)
+            .chain(&timestamp_lines),
+        max,
+    )
+    .map_err(|err| format!("{err}. Nothing was written to the inReach."))?;
+
+    let backup_dir = backup(data, &g.imei, &g.tables)?;
 
     // FirmwareServerUpdate: Garmin hears which firmware the device has.
     step("Telling Garmin the inReach's software version");
     client.report_firmware(&g.info, &g.imei, &g.version, &g.who).map_err(s)?;
 
-    let mut dev = InReach::open(&g.found).map_err(e)?;
+    let mut dev = reopen(&g)?;
     if p.clears_sync_data {
         step("Clearing the sync data");
         dev.write_table(sync_data, sdv, "d,*\r\n").map_err(e)?;
+        // What Garmin sent nothing for goes back as it was.
+        dev.batch_write(sync_data, sdv, &lines(&p.kept_sync_data), max).map_err(e)?;
     }
-    let breadcrumb = vec![plan::Item { kind: plan::BREADCRUMB, short_code: 0, value: "sbc".into() }.insert_line()];
     let by_kind = |kind: u32| p.sync_data.iter().filter(|i| i.kind == kind).cloned().collect::<Vec<_>>();
 
     if !p.contacts.left_alone {
         step("Writing the contacts");
-        let deletes: Vec<String> = p.contact_ids_to_delete.iter().map(|id| format!("d,{id}")).collect();
         dev.batch_write(contacts, cv, &deletes, max).map_err(e)?;
-        let inserts: Vec<String> = p.contact_rows.iter().map(|c| c.insert_line(columns)).collect();
         dev.batch_write(contacts, cv, &inserts, max).map_err(e)?;
         dev.batch_write(sync_data, sdv, &lines(&by_kind(plan::ADDRESS)), max).map_err(e)?;
         dev.batch_write(sync_data, sdv, &breadcrumb, max).map_err(e)?;
@@ -442,8 +529,10 @@ pub fn apply(
     if let Some((version, mine)) = &g.places.waypoints {
         step("Syncing the waypoints");
         let merged = client.update_waypoints(&g.info, &g.imei, mine, &g.who).map_err(s)?;
+        let waypoint_lines = places::waypoint_lines(&merged);
+        device::check_lines(&waypoint_lines, max).map_err(|err| format!("{err}: the waypoints were left as they were."))?;
         dev.write_table(places::WAYPOINTS, *version, "d,*\r\n").map_err(e)?;
-        dev.batch_write(places::WAYPOINTS, *version, &places::waypoint_lines(&merged), max).map_err(e)?;
+        dev.batch_write(places::WAYPOINTS, *version, &waypoint_lines, max).map_err(e)?;
         waypoints_from_garmin = Some(merged.len());
     }
     // Tracks to Garmin only (SyncTracks).
@@ -459,6 +548,9 @@ pub fn apply(
     if let (Some((version, mine)), Some((tb_version, tb_text))) = (&g.places.routes, &g.places.track_blocks) {
         step("Syncing the routes");
         let merged = client.update_routes(&g.info, &g.imei, *tb_version, mine, &g.who).map_err(s)?;
+        let new_routes: Vec<(String, Vec<String>)> = merged.iter().filter_map(places::route_lines).collect();
+        device::check_lines(new_routes.iter().flat_map(|(line, blocks)| std::iter::once(line).chain(blocks)), max)
+            .map_err(|err| format!("{err}: the routes were left as they were."))?;
         if !mine.is_empty() {
             dev.write_table(places::ROUTES, *version, "d,*\r\n").map_err(e)?;
         }
@@ -468,11 +560,9 @@ pub fn apply(
             }
         }
         let mut route_rows = Vec::new();
-        for route in &merged {
-            if let Some((line, blocks)) = places::route_lines(route) {
-                route_rows.push(line);
-                dev.batch_write(places::TRACK_BLOCKS, *tb_version, &blocks, max).map_err(e)?;
-            }
+        for (line, blocks) in new_routes {
+            route_rows.push(line);
+            dev.batch_write(places::TRACK_BLOCKS, *tb_version, &blocks, max).map_err(e)?;
         }
         dev.batch_write(places::ROUTES, *version, &route_rows, max).map_err(e)?;
         routes_from_garmin = Some(merged.len());
@@ -539,9 +629,16 @@ pub fn apply(
     // in app mode, which it may not be after the restart.
     step("Reading the inReach back");
     let after = gather(sysfs, config, keyring, client)?;
+    if after.imei != g.imei {
+        return Err(format!(
+            "Another inReach was read back than the one synced, so it was not restarted. The synced one's \
+             tables as they were are kept in {}.",
+            backup_dir.display()
+        ));
+    }
 
     step("Restarting the inReach");
-    InReach::open(&g.found).and_then(|mut d| d.restart_app_mode()).map_err(e)?;
+    InReach::open(&after.found).and_then(|mut d| d.restart_app_mode()).map_err(e)?;
     let mode_after_restart = wait_after_restart(sysfs);
     Ok(Applied {
         backup: backup_dir,
@@ -595,5 +692,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(folder.join("table-1.csv")).unwrap(), "1,1,Ada\r\n");
         assert!(folder.join("table-9.csv").exists());
         assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+        // A second backup in the same second goes beside it, not over it.
+        let again = backup(dir.path(), "300434000000001", &[(1, "changed\r\n".into())]).unwrap();
+        assert_ne!(again, folder);
+        assert_eq!(std::fs::read_to_string(folder.join("table-1.csv")).unwrap(), "1,1,Ada\r\n");
     }
 }

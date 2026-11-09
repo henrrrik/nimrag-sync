@@ -142,6 +142,24 @@ pub enum Error {
     Refused(String),
     #[error("a line is too long for the device ({0} bytes)")]
     LineTooLong(usize),
+    #[error("another nimrag-sync is using the inReach; try again when it is done")]
+    Busy,
+}
+
+/// Fails as `batch_write` would on a line too long for one script of `max`
+/// bytes, before anything is written.
+pub fn check_lines<'a>(lines: impl IntoIterator<Item = &'a String>, max: usize) -> Result<(), Error> {
+    for line in lines {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let len = line.len() + 2;
+        if len > max {
+            return Err(Error::LineTooLong(len));
+        }
+    }
+    Ok(())
 }
 
 /// The inReach devices with a hidraw node, read from `sysfs` (normally
@@ -183,12 +201,41 @@ pub struct Hidraw {
     file: File,
 }
 
+/// How long an open waits for another nimrag-sync to let go of the device.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+
 impl Hidraw {
+    /// Opens the node and locks it, so that no other nimrag-sync (another
+    /// window, the command line) talks to the device meanwhile and takes its
+    /// answers. Waits up to `LOCK_WAIT` for one that has it.
     pub fn open(node: &Path) -> Result<Hidraw, Error> {
-        match OpenOptions::new().read(true).write(true).open(node) {
-            Ok(file) => Ok(Hidraw { file }),
-            Err(e) if e.kind() == ErrorKind::PermissionDenied => Err(Error::Permission(node.into())),
-            Err(e) => Err(Error::Open(node.into(), e)),
+        let file = match OpenOptions::new().read(true).write(true).open(node) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => return Err(Error::Permission(node.into())),
+            Err(e) => return Err(Error::Open(node.into(), e)),
+        };
+        lock_exclusive(&file, LOCK_WAIT).map_err(|e| match e.kind() {
+            ErrorKind::WouldBlock => Error::Busy,
+            _ => Error::Open(node.into(), e),
+        })?;
+        Ok(Hidraw { file })
+    }
+}
+
+/// An exclusive `flock` on `file`, waiting up to `wait` for it; a
+/// `WouldBlock` error when it stays taken. Released when the file is closed.
+pub fn lock_exclusive(file: &File, wait: Duration) -> std::io::Result<()> {
+    let start = Instant::now();
+    loop {
+        // SAFETY: a valid descriptor, owned by `file` for the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        match e.kind() {
+            ErrorKind::Interrupted => continue,
+            ErrorKind::WouldBlock if start.elapsed() < wait => std::thread::sleep(Duration::from_millis(100)),
+            _ => return Err(e),
         }
     }
 }
@@ -577,5 +624,26 @@ pub(crate) mod tests {
         let names: Vec<_> = found.iter().map(|f| (f.node.to_str().unwrap(), f.name)).collect();
         assert_eq!(names, [("/dev/hidraw4", "inReach Mini"), ("/dev/hidraw5", "inReach")]);
         assert!(find(&dir.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn long_lines_are_found_before_anything_is_written() {
+        let ok = vec!["i,1,a".to_string(), String::new()];
+        assert!(check_lines(&ok, 20).is_ok());
+        let long = vec!["i,1,a".to_string(), "x".repeat(19)];
+        assert!(matches!(check_lines(&long, 20), Err(Error::LineTooLong(21))));
+    }
+
+    #[test]
+    fn a_second_holder_of_the_lock_waits_then_gives_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node");
+        let first = File::create(&path).unwrap();
+        lock_exclusive(&first, Duration::ZERO).unwrap();
+        let second = File::open(&path).unwrap();
+        let err = lock_exclusive(&second, Duration::from_millis(150)).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::WouldBlock);
+        drop(first);
+        lock_exclusive(&second, Duration::ZERO).unwrap();
     }
 }
