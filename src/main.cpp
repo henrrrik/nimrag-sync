@@ -23,7 +23,7 @@ int main(int argc, char *argv[]) {
 
     QGuiApplication app(argc, argv);
     app.setApplicationName("nimrag-sync");
-    app.setApplicationVersion("0.2.0");
+    app.setApplicationVersion("0.3.0");
 
     // Matches the window to nimrag-sync.desktop, so the compositor (Wayland
     // app_id) and the launcher pick up the installed icon.

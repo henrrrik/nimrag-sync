@@ -16,7 +16,7 @@ The packages are signed with nimrag-sync's release key
 (B115 52BD 4C4A C502 17E3  DF95 4B81 8981 13EB C4F6). Have pacman trust it once:
 
 ```sh
-curl -sL https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync.asc | sudo pacman-key --add -
+curl -sL https://github.com/henrrrik/nimrag-sync/releases/download/v0.3.0/nimrag-sync.asc | sudo pacman-key --add -
 sudo pacman-key --finger B11552BD4C4AC50217E3DF954B81898113EBC4F6    # check: B115 52BD 4C4A C502 17E3  DF95 4B81 8981 13EB C4F6
 sudo pacman-key --lsign-key B11552BD4C4AC50217E3DF954B81898113EBC4F6
 ```
@@ -24,7 +24,7 @@ sudo pacman-key --lsign-key B11552BD4C4AC50217E3DF954B81898113EBC4F6
 Then pacman installs a package straight from its address, checking its signature:
 
 ```sh
-sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.2.0/nimrag-sync-0.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U https://github.com/henrrrik/nimrag-sync/releases/download/v0.3.0/nimrag-sync-0.3.0-1-x86_64.pkg.tar.zst
 ```
 
 (`aarch64` in place of `x86_64` on ARM.) Without the key, download the package and `SHA256SUMS`, check
